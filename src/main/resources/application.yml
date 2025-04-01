@@ -1,0 +1,31 @@
+spring:
+  datasource:
+    url: jdbc:mariadb://${DB_HOST:localhost}:${DB_PORT:3306}/${DB_DATABASE:ym-chatbot}?useUnicode=true&characterEncoding=utf8&useSSL=false&allowPublicKeyRetrieval=true
+    username: ${DB_USERNAME:dbuser}
+    password: ${DB_PASSWORD:dbpassword}
+    driver-class-name: org.mariadb.jdbc.Driver
+
+  rabbitmq:
+    host: ${AMQP_HOST:localhost}
+    port: ${AMQP_PORT:5672}
+    username: ${AMQP_USERNAME:guest}
+    password: ${AMQP_PASSWORD:guest}
+    virtual-host: ${AMQP_VHOST:/}
+
+application:
+  rate-limit:
+    script:
+      seconds: ${SCRIPT_RATE_LIMIT_IN_SECONDS:10000}
+      minutes: ${SCRIPT_RATE_LIMIT_IN_MINUTES:600000}
+
+  worker:
+    send-message:
+      replicas: ${WORKER_SEND_MESSAGE_REPLICAS:10}
+      scheduled-fetch-limit: ${WORKER_SCHEDULED_FETCH_LIMIT:10}  # 🔄 limite de campanhas por ciclo
+      enable-campaign-locking: ${ENABLE_CAMPAIGN_LOCKING:true}   # ✅ ativa marcação com posting_status = 1
+      processed-by: ${PROCESSED_BY:java-ms-v2}                   # 🧾 identificador padrão
+    update-status:
+      concurrent-consumers: ${UPDATE_STATUS_CONCURRENT_CONSUMERS:10}
+
+server:
+  port: 8080

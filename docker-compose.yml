@@ -1,0 +1,100 @@
+services:
+  rabbitmq:
+    image: rabbitmq:3-management
+    container_name: rabbitmq
+    hostname: rabbitmq
+    ports:
+      - "5672:5672"
+      - "15672:15672"
+    environment:
+      - RABBITMQ_DEFAULT_USER=guest
+      - RABBITMQ_DEFAULT_PASS=guest
+    healthcheck:
+      test: ["CMD", "rabbitmqctl", "status"]
+      interval: 5s
+      timeout: 5s
+      retries: 5
+      start_period: 10s
+    volumes:
+      - rabbitmq_data:/var/lib/rabbitmq
+    networks:
+      - app_network
+
+  mariadb:
+    image: mariadb:10.6
+    container_name: mariadb
+    restart: unless-stopped
+    command: 
+      - --sql_mode=NO_ENGINE_SUBSTITUTION
+      - --innodb-flush-method=O_DIRECT 
+      - --innodb-use-native-aio=0
+      - --default-authentication-plugin=mysql_native_password
+    environment:
+      - MARIADB_ROOT_PASSWORD=rootpassword
+      - MARIADB_DATABASE=ym-chatbot
+      - MARIADB_USER=dbuser
+      - MARIADB_PASSWORD=dbpassword
+      - MARIADB_AUTO_UPGRADE=1
+    ports:
+      - "3306:3306"
+    volumes:
+      - mariadb_data:/var/lib/mysql
+      - ./mysql-init:/docker-entrypoint-initdb.d
+    networks:
+      - app_network
+    healthcheck:
+      test: ["CMD", "mysqladmin", "ping", "-h", "localhost", "-u", "root", "-prootpassword"]
+      interval: 5s
+      timeout: 5s
+      retries: 10
+      start_period: 30s
+
+  worker_send_message:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    restart: on-failure
+    depends_on:
+      rabbitmq:
+        condition: service_healthy
+      mariadb:
+        condition: service_healthy
+    volumes:
+      - "./storage:/app/storage"
+    environment:
+      - SPRING_PROFILES_ACTIVE=prod
+      - DOCKER_ENV=true
+      - SPRING_DATASOURCE_URL=jdbc:mariadb://mariadb:3306/ym-chatbot?useUnicode=true&characterEncoding=utf8&useSSL=false&allowPublicKeyRetrieval=true
+      - SPRING_DATASOURCE_USERNAME=dbuser
+      - SPRING_DATASOURCE_PASSWORD=dbpassword
+      - SPRING_RABBITMQ_HOST=rabbitmq
+      - SPRING_RABBITMQ_PORT=5672
+      - SPRING_RABBITMQ_USERNAME=guest
+      - SPRING_RABBITMQ_PASSWORD=guest
+      - SCRIPT_RATE_LIMIT_IN_SECONDS=50000
+      - SCRIPT_RATE_LIMIT_IN_MINUTES=1000000
+      - WORKER_SEND_MESSAGE_REPLICAS=10
+      - UPDATE_STATUS_CONCURRENT_CONSUMERS=10
+      - JAVA_OPTS=-Xms1G -Xmx2G
+    networks:
+      - app_network
+    deploy:
+      mode: replicated
+      replicas: ${WORKER_SEND_MESSAGE_REPLICAS:-10}
+      resources:
+        limits:
+          cpus: '2'
+          memory: 2048M
+      restart_policy:
+        condition: on-failure
+        delay: 5s
+        max_attempts: 3
+        window: 120s
+
+networks:
+  app_network:
+    name: app_network
+
+volumes:
+  rabbitmq_data:
+  mariadb_data:
