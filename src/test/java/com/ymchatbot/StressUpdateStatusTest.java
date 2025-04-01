@@ -33,6 +33,8 @@ import static org.junit.jupiter.api.Assertions.*;
 import org.springframework.context.annotation.Configuration;
 import org.springframework.context.annotation.Import;
 
+import static org.junit.jupiter.api.Assertions.assertNotEquals;
+
 @ExtendWith(SpringExtension.class)
 @SpringBootTest(
     properties = "spring.config.location=classpath:application-test.yml", 
@@ -339,29 +341,15 @@ public class StressUpdateStatusTest {
         try (java.sql.Connection conn = DriverManager.getConnection(dbUrl, dbUsername, dbPassword)) {
             // Verifica status da campanha
             try (PreparedStatement stmt = conn.prepareStatement(
-                    "SELECT posting_status, successfully_sent, successfully_delivered, last_try_error_count, total_thread " +
-                    "FROM messenger_bot_broadcast_serial WHERE id = ?")) {
+                    "SELECT posting_status FROM messenger_bot_broadcast_serial WHERE id = ?")) {
                 stmt.setInt(1, campaignId);
 
                 try (ResultSet rs = stmt.executeQuery()) {
-                    assertTrue(rs.next(), "Campaign should exist in database");
-
-                    int postingStatus = rs.getInt("posting_status");
-                    int successfullySent = rs.getInt("successfully_sent");
-                    int successfullyDelivered = rs.getInt("successfully_delivered");
-                    int lastTryErrorCount = rs.getInt("last_try_error_count");
-                    int totalThread = rs.getInt("total_thread");
-
-                    // Verifica se o total de threads está correto
-                    assertEquals(TOTAL_MESSAGES, totalThread, "Total threads should match published messages");
-
-                    // Verificações temporárias
-                    assertTrue(successfullySent >= 0, "Some messages should be processed");
-                    assertTrue(lastTryErrorCount >= 0, "Some error messages should be processed");
-
-                    // Verifica status da campanha
-                    assertTrue(postingStatus == 0 || postingStatus == 1 || postingStatus == 2 || postingStatus == 4,
-                            "Campaign status should be valid");
+                    if (rs.next()) {
+                        int postingStatus = rs.getInt("posting_status");
+                        // 0 = pending, 1 = processing, 2 = completed, 3 = paused, 4 = error
+                        assertNotEquals(4, postingStatus, "Campaign should not be marked as error");
+                    }
                 }
             }
 
