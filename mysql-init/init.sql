@@ -8,13 +8,16 @@ FLUSH PRIVILEGES;
 
 USE `ym-chatbot`;
 
--- 1. Drop old tables (opcional para garantir recriação)
+-- 1. Drop old tables
 DROP TABLE IF EXISTS `messenger_bot_broadcast_serial_send`;
 DROP TABLE IF EXISTS `messenger_bot_broadcast_serial`;
 DROP TABLE IF EXISTS `facebook_rx_fb_page_info`;
 DROP TABLE IF EXISTS `messenger_bot_subscriber`;
+DROP TABLE IF EXISTS `messenger_bot_broadcast_serial_logger`;
+DROP TABLE IF EXISTS `messenger_bot_broadcast_serial_logger_serial`;
 
--- 2. Create necessary tables
+-- 2. Create tables
+
 -- Facebook page info table
 CREATE TABLE IF NOT EXISTS `facebook_rx_fb_page_info` (
   `id` INT NOT NULL AUTO_INCREMENT,
@@ -26,18 +29,19 @@ CREATE TABLE IF NOT EXISTS `facebook_rx_fb_page_info` (
   KEY `page_id` (`page_id`)
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
 
--- Campaign table (atualizada para incluir schedule_time)
+-- Campaign table
 CREATE TABLE IF NOT EXISTS `messenger_bot_broadcast_serial` (
   `id` INT NOT NULL PRIMARY KEY,
   `user_id` INT NOT NULL DEFAULT 1,
   `page_id` INT NOT NULL DEFAULT 1,
   `fb_page_id` VARCHAR(200) NOT NULL DEFAULT '',
-  `posting_status` TINYINT NOT NULL DEFAULT 0 COMMENT '0=pending, 1=processing, 2=completed, 3=paused, 4=error',
-  `is_try_again` TINYINT NOT NULL DEFAULT 0,
-  `successfully_sent` INT NOT NULL DEFAULT 0,
-  `successfully_delivered` INT NOT NULL DEFAULT 0,
+  `message` MEDIUMTEXT,
+  `posting_status` ENUM('0','1','2','3','4') NOT NULL DEFAULT '0',
+  `is_try_again` ENUM('0','1') NOT NULL DEFAULT '1',
   `last_try_error_count` INT NOT NULL DEFAULT 0,
   `total_thread` INT NOT NULL DEFAULT 0,
+  `successfully_sent` INT NOT NULL DEFAULT 0,
+  `successfully_delivered` INT NOT NULL DEFAULT 0,
   `schedule_time` DATETIME DEFAULT CURRENT_TIMESTAMP,
   `created_at` DATETIME DEFAULT CURRENT_TIMESTAMP,
   `completed_at` DATETIME DEFAULT NULL
@@ -49,11 +53,14 @@ CREATE TABLE IF NOT EXISTS `messenger_bot_broadcast_serial_send` (
   `campaign_id` INT NOT NULL,
   `user_id` INT NOT NULL DEFAULT 1,
   `page_id` INT NOT NULL DEFAULT 1,
+  `messenger_bot_subscriber` INT NOT NULL DEFAULT 0,
   `subscriber_auto_id` INT NOT NULL,
   `subscribe_id` VARCHAR(255) NOT NULL DEFAULT '',
+  `subscriber_name` VARCHAR(255) NOT NULL DEFAULT '',
+  `subscriber_lastname` VARCHAR(200) NOT NULL DEFAULT '',
+  `processed` ENUM('0','1') NOT NULL DEFAULT '0',
   `delivered` ENUM('0','1') NOT NULL DEFAULT '0',
   `delivery_time` DATETIME DEFAULT NULL,
-  `processed` ENUM('0','1') NOT NULL DEFAULT '0',
   `error_message` TEXT,
   `message_sent_id` VARCHAR(255) NOT NULL DEFAULT '',
   `sent_time` DATETIME DEFAULT NULL,
@@ -61,14 +68,29 @@ CREATE TABLE IF NOT EXISTS `messenger_bot_broadcast_serial_send` (
   KEY `idx_campaign_processed` (`campaign_id`, `processed`)
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
 
--- Minimal table for subscribers (para evitar erros)
+-- Subscriber table
 CREATE TABLE IF NOT EXISTS `messenger_bot_subscriber` (
   `id` INT NOT NULL AUTO_INCREMENT,
   `last_error_message` TEXT,
   `unavailable` TINYINT(1) NOT NULL DEFAULT 0,
   PRIMARY KEY (`id`)
-) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
 
--- 3. Insert some initial data
+-- Broadcast serial logger table (for future use)
+CREATE TABLE IF NOT EXISTS `messenger_bot_broadcast_serial_logger` (
+  `id` INT NOT NULL AUTO_INCREMENT,
+  `status` TINYINT NOT NULL DEFAULT 2,
+  PRIMARY KEY (`id`)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
+
+-- Broadcast serial logger serial table (for future use)
+CREATE TABLE IF NOT EXISTS `messenger_bot_broadcast_serial_logger_serial` (
+  `id` INT NOT NULL AUTO_INCREMENT,
+  `logger_id` INT NOT NULL,
+  `serial_id` INT NOT NULL,
+  PRIMARY KEY (`id`)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
+
+-- 3. Insert initial data
 INSERT INTO `facebook_rx_fb_page_info` (`user_id`, `page_id`, `page_name`, `page_access_token`) 
 VALUES (1, '123456789', 'Test Page', 'EAABODYFiZBWwBANcZAgHD6k...(token simulado)');

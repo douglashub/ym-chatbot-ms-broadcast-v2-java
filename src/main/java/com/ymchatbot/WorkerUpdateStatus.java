@@ -16,6 +16,7 @@ import org.json.JSONObject;
 @Component
 public class WorkerUpdateStatus {
     private final String queueName = "broadcast-v2/update-status";
+    private static final int MAX_DB_RECONNECT_ATTEMPTS = 3;
 
     @Value("${spring.datasource.url}")
     private String dbUrl;
@@ -92,6 +93,32 @@ public class WorkerUpdateStatus {
         LoggerUtil.info("✅ Database connection established to " + dbUrl);
     }
 
+    private boolean ensureDbConnection() {
+        for (int attempt = 1; attempt <= MAX_DB_RECONNECT_ATTEMPTS; attempt++) {
+            try {
+                if (dbConnection == null || dbConnection.isClosed()) {
+                    LoggerUtil.info("Reconnecting to database (attempt " + attempt + ")");
+                    initDbConnection();
+                }
+                // Teste a conexão com uma consulta simples
+                try (Statement stmt = dbConnection.createStatement()) {
+                    stmt.executeQuery("SELECT 1");
+                }
+                return true;
+            } catch (SQLException e) {
+                LoggerUtil.error("Failed to ensure database connection on attempt " + attempt, e);
+                if (attempt < MAX_DB_RECONNECT_ATTEMPTS) {
+                    try {
+                        Thread.sleep(1000 * attempt); // Backoff exponencial
+                    } catch (InterruptedException ie) {
+                        Thread.currentThread().interrupt();
+                    }
+                }
+            }
+        }
+        return false;
+    }
+
     public void start() throws IOException {
         if (started) return;
 
@@ -120,6 +147,7 @@ public class WorkerUpdateStatus {
     private void processMessage(Delivery delivery) throws Exception {
         long count = processedCount.incrementAndGet();
         String messageBody = new String(delivery.getBody(), StandardCharsets.UTF_8);
+        long deliveryTag = delivery.getEnvelope().getDeliveryTag();
         LoggerUtil.info("📩 Processing message #" + count + ": " + messageBody);
 
         JSONObject message;
@@ -127,7 +155,7 @@ public class WorkerUpdateStatus {
             message = new JSONObject(messageBody);
         } catch (JSONException e) {
             LoggerUtil.error("❌ Failed to parse message", e);
-            safeReject(delivery.getEnvelope().getDeliveryTag(), false);
+            safeAck(deliveryTag); // Ack para não reprocessar mensagens malformadas
             return;
         }
 
@@ -135,7 +163,7 @@ public class WorkerUpdateStatus {
             !message.has("messenger_bot_broadcast_serial_send") ||
             !message.has("response")) {
             LoggerUtil.error("❌ Missing required fields in message");
-            safeReject(delivery.getEnvelope().getDeliveryTag(), false);
+            safeAck(deliveryTag); // Ack para não reprocessar mensagens malformadas
             return;
         }
 
@@ -152,56 +180,131 @@ public class WorkerUpdateStatus {
                 successCount.incrementAndGet();
             }
 
-            safeAck(delivery.getEnvelope().getDeliveryTag());
+            safeAck(deliveryTag);
             logPeriodicStats();
 
         } catch (SQLException e) {
-            LoggerUtil.error("❌ Database error", e);
-            safeReject(delivery.getEnvelope().getDeliveryTag(), true);
+            LoggerUtil.error("❌ Database error processing message " + messageId + " for campaign " + campaignId, e);
+            safeReject(deliveryTag, true);
         }
     }
 
     private void updateMessageWithSuccess(int campaignId, int messageId, String externalMessageId) throws SQLException {
-        String sql = "UPDATE messenger_bot_broadcast_serial_send " +
-                     "SET processed = 1, delivered = 1, message_sent_id = ?, processed_by = 'java-ms-v2'" +
-                     "WHERE campaign_id = ? AND id = ?";
-        try (PreparedStatement stmt = dbConnection.prepareStatement(sql)) {
-            stmt.setString(1, externalMessageId);
-            stmt.setInt(2, campaignId);
-            stmt.setInt(3, messageId);
-            stmt.executeUpdate();
+        if (!ensureDbConnection()) {
+            throw new SQLException("Failed to establish database connection after " + MAX_DB_RECONNECT_ATTEMPTS + " attempts");
+        }
+
+        boolean originalAutoCommit = false;
+        try {
+            originalAutoCommit = dbConnection.getAutoCommit();
+            dbConnection.setAutoCommit(false);
+            
+            String sql = "UPDATE messenger_bot_broadcast_serial_send " +
+                         "SET processed = '1', delivered = '1', message_sent_id = ?, processed_by = 'java-ms-v2' " +
+                         "WHERE campaign_id = ? AND id = ?";
+            try (PreparedStatement stmt = dbConnection.prepareStatement(sql)) {
+                stmt.setString(1, externalMessageId);
+                stmt.setInt(2, campaignId);
+                stmt.setInt(3, messageId);
+                int updated = stmt.executeUpdate();
+                
+                if (updated == 0) {
+                    LoggerUtil.warn("⚠️ No rows updated for success message - campaignId: " + campaignId + ", messageId: " + messageId);
+                } else {
+                    LoggerUtil.debug("✅ Successfully updated message - campaignId: " + campaignId + ", messageId: " + messageId);
+                }
+            }
+            
+            dbConnection.commit();
+        } catch (SQLException e) {
+            try {
+                dbConnection.rollback();
+            } catch (SQLException re) {
+                LoggerUtil.error("Failed to rollback transaction", re);
+            }
+            throw e;
+        } finally {
+            try {
+                dbConnection.setAutoCommit(originalAutoCommit);
+            } catch (SQLException e) {
+                LoggerUtil.error("Failed to restore autoCommit setting", e);
+            }
         }
     }
 
     private void updateMessageWithError(int campaignId, int messageId, JSONObject error) throws SQLException {
-        String errorMessage = error.optString("message", "Unknown error");
-        int errorCode = error.optInt("code", 0);
-
-        String updateSql = "UPDATE messenger_bot_broadcast_serial_send " +
-                           "SET processed = 1, delivered = 0, error_message = ?, processed_by = 'java-ms-v2'" +
-                           "WHERE campaign_id = ? AND id = ?";
-        try (PreparedStatement stmt = dbConnection.prepareStatement(updateSql)) {
-            stmt.setString(1, "Code: " + errorCode + ", Message: " + errorMessage);
-            stmt.setInt(2, campaignId);
-            stmt.setInt(3, messageId);
-            stmt.executeUpdate();
+        if (!ensureDbConnection()) {
+            throw new SQLException("Failed to establish database connection after " + MAX_DB_RECONNECT_ATTEMPTS + " attempts");
         }
 
-        if (errorCode == 551) {
-            String sql = """
-                UPDATE messenger_bot_subscriber
-                SET last_error_message = ?, unavailable = 1
-                WHERE id = (
-                    SELECT messenger_bot_subscriber
-                    FROM messenger_bot_broadcast_serial_send
-                    WHERE campaign_id = ? AND id = ?
-                    LIMIT 1
-                )""";
-            try (PreparedStatement stmt = dbConnection.prepareStatement(sql)) {
-                stmt.setString(1, errorMessage);
+        boolean originalAutoCommit = false;
+        try {
+            originalAutoCommit = dbConnection.getAutoCommit();
+            dbConnection.setAutoCommit(false);
+            
+            String errorMessage = error.optString("message", "Unknown error");
+            int errorCode = error.optInt("code", 0);
+
+            String updateSql = "UPDATE messenger_bot_broadcast_serial_send " +
+                               "SET processed = '1', delivered = '0', error_message = ?, processed_by = 'java-ms-v2' " +
+                               "WHERE campaign_id = ? AND id = ?";
+            try (PreparedStatement stmt = dbConnection.prepareStatement(updateSql)) {
+                stmt.setString(1, "Code: " + errorCode + ", Message: " + errorMessage);
                 stmt.setInt(2, campaignId);
                 stmt.setInt(3, messageId);
-                stmt.executeUpdate();
+                int updated = stmt.executeUpdate();
+                
+                if (updated == 0) {
+                    LoggerUtil.warn("⚠️ No rows updated for error message - campaignId: " + campaignId + ", messageId: " + messageId);
+                } else {
+                    LoggerUtil.debug("✅ Successfully updated error message - campaignId: " + campaignId + ", messageId: " + messageId);
+                }
+            }
+
+            if (errorCode == 551) {
+                try {
+                    // Verifique se a tabela existe antes de tentar atualizar
+                    try (Statement checkStmt = dbConnection.createStatement()) {
+                        ResultSet rs = checkStmt.executeQuery("SHOW TABLES LIKE 'messenger_bot_subscriber'");
+                        if (!rs.next()) {
+                            LoggerUtil.warn("messenger_bot_subscriber table does not exist, skipping subscriber update");
+                        } else {
+                            String sql = """
+                                UPDATE messenger_bot_subscriber
+                                SET last_error_message = ?, unavailable = 1
+                                WHERE id = (
+                                    SELECT messenger_bot_subscriber
+                                    FROM messenger_bot_broadcast_serial_send
+                                    WHERE campaign_id = ? AND id = ?
+                                    LIMIT 1
+                                )""";
+                            try (PreparedStatement stmt = dbConnection.prepareStatement(sql)) {
+                                stmt.setString(1, errorMessage);
+                                stmt.setInt(2, campaignId);
+                                stmt.setInt(3, messageId);
+                                stmt.executeUpdate();
+                            }
+                        }
+                    }
+                } catch (SQLException e) {
+                    LoggerUtil.error("❌ Error updating subscriber status", e);
+                    // Não re-throw para não afetar a transação principal
+                }
+            }
+            
+            dbConnection.commit();
+        } catch (SQLException e) {
+            try {
+                dbConnection.rollback();
+            } catch (SQLException re) {
+                LoggerUtil.error("Failed to rollback transaction", re);
+            }
+            throw e;
+        } finally {
+            try {
+                dbConnection.setAutoCommit(originalAutoCommit);
+            } catch (SQLException e) {
+                LoggerUtil.error("Failed to restore autoCommit setting", e);
             }
         }
     }
