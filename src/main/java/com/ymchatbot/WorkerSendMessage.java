@@ -279,8 +279,8 @@ public class WorkerSendMessage {
             try (ResultSet rs = stmt.executeQuery()) {
                 while (rs.next()) {
                     String rawMessage = rs.getString("message");
-                    if (rawMessage == null || rawMessage.isBlank()) {
-                        LoggerUtil.warn("Null or blank message for campaign " + campaignId);
+                    if (rawMessage == null || rawMessage.isBlank() || !rawMessage.trim().startsWith("{")) {
+                        LoggerUtil.warn("Skipping non-JSON message for campaign " + campaignId + ": " + rawMessage);
                         continue;
                     }
 

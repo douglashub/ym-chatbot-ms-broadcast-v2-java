@@ -35,11 +35,14 @@ import org.springframework.context.annotation.Import;
 
 import static org.junit.jupiter.api.Assertions.assertNotEquals;
 
+import java.util.Random;
+
 @ExtendWith(SpringExtension.class)
 @SpringBootTest(properties = "spring.config.location=classpath:application-test.yml", webEnvironment = SpringBootTest.WebEnvironment.NONE)
 @ActiveProfiles("test")
 @ComponentScan(basePackages = { "com.ymchatbot" }) // Add this line
 public class StressUpdateStatusTest {
+    private static final Random RANDOM = new Random(1337);
 
     @Value("${spring.rabbitmq.host}")
     private String amqpHost;
@@ -75,13 +78,14 @@ public class StressUpdateStatusTest {
         // Garantir que as tabelas necessárias existam
         setupDatabase();
     }
+
     private void setupDatabase() throws SQLException {
         try (java.sql.Connection conn = DriverManager.getConnection(dbUrl, dbUsername, dbPassword);
-             java.sql.Statement stmt = conn.createStatement()) {
-    
+                java.sql.Statement stmt = conn.createStatement()) {
+
             // Desativa checagens de chave estrangeira temporariamente (opcional)
             stmt.execute("SET FOREIGN_KEY_CHECKS=0");
-    
+
             // Drop das tabelas, na ordem certa para evitar problemas de FK
             stmt.execute("DROP TABLE IF EXISTS messenger_bot_broadcast_serial_logger_serial");
             stmt.execute("DROP TABLE IF EXISTS messenger_bot_broadcast_serial_send");
@@ -89,112 +93,115 @@ public class StressUpdateStatusTest {
             stmt.execute("DROP TABLE IF EXISTS facebook_rx_fb_page_info");
             stmt.execute("DROP TABLE IF EXISTS messenger_bot_subscriber");
             stmt.execute("DROP TABLE IF EXISTS messenger_bot_broadcast_serial_logger");
-    
+
             // Reativa checagens de FK
             stmt.execute("SET FOREIGN_KEY_CHECKS=1");
-    
+
             // Cria tabela de páginas do Facebook
             stmt.execute("""
-                CREATE TABLE facebook_rx_fb_page_info (
-                  id INT NOT NULL AUTO_INCREMENT PRIMARY KEY,
-                  user_id INT NOT NULL DEFAULT 1,
-                  page_id VARCHAR(200) NOT NULL,
-                  page_name VARCHAR(200) NULL,
-                  page_access_token TEXT NOT NULL,
-                  KEY idx_page_id (page_id)
-                ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4
-            """);
-    
+                        CREATE TABLE facebook_rx_fb_page_info (
+                          id INT NOT NULL AUTO_INCREMENT PRIMARY KEY,
+                          user_id INT NOT NULL DEFAULT 1,
+                          page_id VARCHAR(200) NOT NULL,
+                          page_name VARCHAR(200) NULL,
+                          page_access_token TEXT NOT NULL,
+                          KEY idx_page_id (page_id)
+                        ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4
+                    """);
+
             // Insere dados fictícios
             stmt.execute("""
-                INSERT INTO facebook_rx_fb_page_info (user_id, page_id, page_name, page_access_token)
-                VALUES (1, '123456789', 'Test Page', 'EAABODYFiZBWwBANcZAgHD6k...(token simulado)')
-            """);
-    
+                        INSERT INTO facebook_rx_fb_page_info (user_id, page_id, page_name, page_access_token)
+                        VALUES (1, '123456789', 'Test Page', 'EAABODYFiZBWwBANcZAgHD6k...(token simulado)')
+                    """);
+
             // Cria tabela de campanhas
             stmt.execute("""
-                CREATE TABLE messenger_bot_broadcast_serial (
-                  id INT NOT NULL PRIMARY KEY,
-                  user_id INT NOT NULL DEFAULT 1,
-                  page_id INT NOT NULL DEFAULT 1,
-                  fb_page_id VARCHAR(200) NOT NULL DEFAULT '',
-                  message MEDIUMTEXT,
-                  posting_status TINYINT NOT NULL DEFAULT 0,
-                  is_try_again TINYINT NOT NULL DEFAULT 0,
-                  successfully_sent INT NOT NULL DEFAULT 0,
-                  successfully_delivered INT NOT NULL DEFAULT 0,
-                  last_try_error_count INT NOT NULL DEFAULT 0,
-                  total_thread INT NOT NULL DEFAULT 0,
-                  schedule_time DATETIME DEFAULT CURRENT_TIMESTAMP,
-                  created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
-                  completed_at DATETIME DEFAULT NULL
-                ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4
-            """);
-    
+                        CREATE TABLE messenger_bot_broadcast_serial (
+                          id INT NOT NULL PRIMARY KEY,
+                          user_id INT NOT NULL DEFAULT 1,
+                          page_id INT NOT NULL DEFAULT 1,
+                          fb_page_id VARCHAR(200) NOT NULL DEFAULT '',
+                          message MEDIUMTEXT,
+                          posting_status TINYINT NOT NULL DEFAULT 0,
+                          is_try_again TINYINT NOT NULL DEFAULT 0,
+                          successfully_sent INT NOT NULL DEFAULT 0,
+                          successfully_delivered INT NOT NULL DEFAULT 0,
+                          last_try_error_count INT NOT NULL DEFAULT 0,
+                          total_thread INT NOT NULL DEFAULT 0,
+                          schedule_time DATETIME DEFAULT CURRENT_TIMESTAMP,
+                          created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+                          completed_at DATETIME DEFAULT NULL
+                        ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4
+                    """);
+
+            // 🔥 Limpa campanhas com mensagens malformadas (ex: 'Test Message')
+            stmt.execute("DELETE FROM messenger_bot_broadcast_serial WHERE message IS NULL OR message NOT LIKE '{%'");
+
             // Cria tabela de mensagens
             stmt.execute("""
-                CREATE TABLE messenger_bot_broadcast_serial_send (
-                  id INT NOT NULL AUTO_INCREMENT PRIMARY KEY,
-                  campaign_id INT NOT NULL,
-                  user_id INT NOT NULL DEFAULT 1,
-                  page_id INT NOT NULL DEFAULT 1,
-                  messenger_bot_subscriber INT NOT NULL DEFAULT 0,
-                  subscriber_auto_id INT NOT NULL,
-                  subscribe_id VARCHAR(255) NOT NULL DEFAULT '',
-                  subscriber_name VARCHAR(255) NOT NULL DEFAULT '',
-                  subscriber_lastname VARCHAR(200) NOT NULL DEFAULT '',
-                  delivered ENUM('0','1') NOT NULL DEFAULT '0',
-                  delivery_time DATETIME DEFAULT NULL,
-                  processed ENUM('0','1') NOT NULL DEFAULT '0',
-                  error_message TEXT,
-                  message_sent_id VARCHAR(255) NOT NULL DEFAULT '',
-                  sent_time DATETIME DEFAULT NULL,
-                  processed_by VARCHAR(30) DEFAULT NULL,
-                  KEY idx_campaign_processed (campaign_id, processed)
-                ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4
-            """);
-    
+                        CREATE TABLE messenger_bot_broadcast_serial_send (
+                          id INT NOT NULL AUTO_INCREMENT PRIMARY KEY,
+                          campaign_id INT NOT NULL,
+                          user_id INT NOT NULL DEFAULT 1,
+                          page_id INT NOT NULL DEFAULT 1,
+                          messenger_bot_subscriber INT NOT NULL DEFAULT 0,
+                          subscriber_auto_id INT NOT NULL,
+                          subscribe_id VARCHAR(255) NOT NULL DEFAULT '',
+                          subscriber_name VARCHAR(255) NOT NULL DEFAULT '',
+                          subscriber_lastname VARCHAR(200) NOT NULL DEFAULT '',
+                          delivered ENUM('0','1') NOT NULL DEFAULT '0',
+                          delivery_time DATETIME DEFAULT NULL,
+                          processed ENUM('0','1') NOT NULL DEFAULT '0',
+                          error_message TEXT,
+                          message_sent_id VARCHAR(255) NOT NULL DEFAULT '',
+                          sent_time DATETIME DEFAULT NULL,
+                          processed_by VARCHAR(30) DEFAULT NULL,
+                          KEY idx_campaign_processed (campaign_id, processed)
+                        ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4
+                    """);
+
             // Cria tabela de assinantes
             stmt.execute("""
-                CREATE TABLE messenger_bot_subscriber (
-                  id INT NOT NULL AUTO_INCREMENT PRIMARY KEY,
-                  last_error_message TEXT,
-                  unavailable TINYINT(1) NOT NULL DEFAULT 0
-                ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4
-            """);
-    
+                        CREATE TABLE messenger_bot_subscriber (
+                          id INT NOT NULL AUTO_INCREMENT PRIMARY KEY,
+                          last_error_message TEXT,
+                          unavailable TINYINT(1) NOT NULL DEFAULT 0
+                        ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4
+                    """);
+
             // Cria tabela de logs
             stmt.execute("""
-                CREATE TABLE messenger_bot_broadcast_serial_logger (
-                  id INT NOT NULL AUTO_INCREMENT PRIMARY KEY,
-                  user_id INT NOT NULL DEFAULT 1,
-                  page_id INT NOT NULL DEFAULT 1,
-                  status TINYINT NOT NULL DEFAULT 2,
-                  created_at DATETIME DEFAULT CURRENT_TIMESTAMP
-                ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4
-            """);
-    
+                        CREATE TABLE messenger_bot_broadcast_serial_logger (
+                          id INT NOT NULL AUTO_INCREMENT PRIMARY KEY,
+                          user_id INT NOT NULL DEFAULT 1,
+                          page_id INT NOT NULL DEFAULT 1,
+                          status TINYINT NOT NULL DEFAULT 2,
+                          created_at DATETIME DEFAULT CURRENT_TIMESTAMP
+                        ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4
+                    """);
+
             // Cria tabela de relacionamento entre logger e campanha
             stmt.execute("""
-                CREATE TABLE messenger_bot_broadcast_serial_logger_serial (
-                  id INT NOT NULL AUTO_INCREMENT PRIMARY KEY,
-                  logger_id INT NOT NULL,
-                  serial_id INT NOT NULL
-                ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4
-            """);
-    
+                        CREATE TABLE messenger_bot_broadcast_serial_logger_serial (
+                          id INT NOT NULL AUTO_INCREMENT PRIMARY KEY,
+                          logger_id INT NOT NULL,
+                          serial_id INT NOT NULL
+                        ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4
+                    """);
+
             // Popula tabela de subscribers com registros simulados
             for (int i = 1; i <= Math.min(100, TOTAL_MESSAGES); i++) {
                 stmt.execute("INSERT INTO messenger_bot_subscriber (id) VALUES (" + (SUBSCRIBER_ID_START + i) + ")");
             }
-    
+
             // Índice para performance
             stmt.execute("CREATE INDEX idx_campaign_id ON messenger_bot_broadcast_serial_send (campaign_id)");
-    
+
             System.out.println("📊 Database tables created successfully");
         }
     }
-    
+
     private void waitForWorkerReady() throws InterruptedException {
         System.out.println("⌛ Waiting for worker to be ready...");
         Thread.sleep(5000); // Increased from 2000 ms
@@ -266,8 +273,7 @@ public class StressUpdateStatusTest {
                     error.put("message", "DNS resolution failed");
                     error.put("code", 504);
                     response.put("error", error);
-                } else if (i % 3 == 0) {
-                    // Simula erro comum de usuário indisponível
+                } else if (RANDOM.nextDouble() < 0.333) { // ~33.3% error rate using fixed seed
                     JSONObject error = new JSONObject();
                     error.put("message", "User unavailable");
                     error.put("code", 551);
@@ -414,7 +420,8 @@ public class StressUpdateStatusTest {
                     int tolerance = Math.max(50, TOTAL_MESSAGES / 20); // 5% tolerance or at least 50
                     int expectedErrorCount = 367; // Calculado considerando sobreposição de erros
                     assertTrue(Math.abs(expectedErrorCount - errorCount) <= tolerance,
-                            "Number of error messages should be approximately equal to error count (expected: " + expectedErrorCount + ", actual: " + errorCount + ")");
+                            "Number of error messages should be approximately equal to error count (expected: "
+                                    + expectedErrorCount + ", actual: " + errorCount + ")");
                     assertEquals(successMessages, deliveredCount,
                             "Number of delivered messages should match success messages");
                     assertTrue(uniqueMessageIds > 0, "Messages with success should have unique message IDs");
