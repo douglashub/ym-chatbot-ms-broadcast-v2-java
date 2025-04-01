@@ -48,7 +48,7 @@ public class WorkerSendMessage {
 
     @Value("${application.rate-limit.script.seconds:10000}")
     private int rateLimitPerSecond;
-    
+
     @Value("${application.rate-limit.script.minutes:600000}")
     private int rateLimitPerMinute;
 
@@ -194,14 +194,16 @@ public class WorkerSendMessage {
     private void updateLoggerStatus(int campaignId) {
         try {
             String loggerQuery = "INSERT INTO messenger_bot_broadcast_serial_logger (status) VALUES (5)";
-            String loggerSerialQuery = "INSERT INTO messenger_bot_broadcast_serial_logger_serial (logger_id, serial_id) " +
-                                       "VALUES (LAST_INSERT_ID(), ?)";
-    
-            try (PreparedStatement loggerStmt = dbConnection.prepareStatement(loggerQuery, Statement.RETURN_GENERATED_KEYS);
-                 PreparedStatement loggerSerialStmt = dbConnection.prepareStatement(loggerSerialQuery)) {
-    
+            String loggerSerialQuery = "INSERT INTO messenger_bot_broadcast_serial_logger_serial (logger_id, serial_id) "
+                    +
+                    "VALUES (LAST_INSERT_ID(), ?)";
+
+            try (PreparedStatement loggerStmt = dbConnection.prepareStatement(loggerQuery,
+                    Statement.RETURN_GENERATED_KEYS);
+                    PreparedStatement loggerSerialStmt = dbConnection.prepareStatement(loggerSerialQuery)) {
+
                 loggerStmt.executeUpdate();
-                
+
                 try (ResultSet generatedKeys = loggerStmt.getGeneratedKeys()) {
                     if (generatedKeys.next()) {
                         loggerSerialStmt.setInt(1, campaignId);
@@ -213,7 +215,7 @@ public class WorkerSendMessage {
             LoggerUtil.warn("Could not update logger status for campaign " + campaignId + ": " + e.getMessage());
         }
     }
-    
+
     @Scheduled(fixedDelay = 10000)
     public void scheduledFetchAndEnqueue() {
         try {
@@ -221,7 +223,7 @@ public class WorkerSendMessage {
             for (Integer campaignId : campaignIds) {
                 markCampaignAsSending(campaignId);
                 markCampaignLoggersAsSending(campaignId); // Add this line
-                
+
                 // Update logger status to 5 (sending)
                 updateLoggerStatus(campaignId);
 
@@ -255,58 +257,76 @@ public class WorkerSendMessage {
 
     private JSONArray fetchMessagesForCampaign(int campaignId) throws SQLException {
         String query = """
-            SELECT 
-                s.id AS messenger_bot_broadcast_serial_send,
-                s.messenger_bot_subscriber,
-                p.page_access_token AS token,
-                c.message AS message,
-                s.subscriber_name AS lead_name,
-                s.subscriber_lastname AS lead_last_name,
-                s.subscribe_id AS subscribe_id
-            FROM messenger_bot_broadcast_serial_send s
-            JOIN facebook_rx_fb_page_info p ON p.id = s.page_id
-            JOIN messenger_bot_broadcast_serial c ON c.id = s.campaign_id
-            WHERE s.campaign_id = ? AND s.processed = '0'
-            LIMIT 100
-        """;
-    
+                    SELECT
+                        s.id AS messenger_bot_broadcast_serial_send,
+                        s.messenger_bot_subscriber,
+                        p.page_access_token AS token,
+                        c.message AS message,
+                        s.subscriber_name AS lead_name,
+                        s.subscriber_lastname AS lead_last_name,
+                        s.subscribe_id AS subscribe_id
+                    FROM messenger_bot_broadcast_serial_send s
+                    JOIN facebook_rx_fb_page_info p ON p.id = s.page_id
+                    JOIN messenger_bot_broadcast_serial c ON c.id = s.campaign_id
+                    WHERE s.campaign_id = ? AND s.processed = '0'
+                    LIMIT 100
+                """;
+
         JSONArray result = new JSONArray();
+
         try (PreparedStatement stmt = dbConnection.prepareStatement(query)) {
             stmt.setInt(1, campaignId);
             try (ResultSet rs = stmt.executeQuery()) {
                 while (rs.next()) {
-                    // Prepare message with replacements
-                    String message = rs.getString("message");
-                    if (message == null) {
-                        LoggerUtil.warn("Null message for campaign " + campaignId);
+                    String rawMessage = rs.getString("message");
+                    if (rawMessage == null || rawMessage.isBlank()) {
+                        LoggerUtil.warn("Null or blank message for campaign " + campaignId);
                         continue;
                     }
-    
-                    message = message.replace("{{first_name}}", rs.getString("lead_name") != null ? rs.getString("lead_name") : "")
-                                     .replace("{{last_name}}", rs.getString("lead_last_name") != null ? rs.getString("lead_last_name") : "")
-                                     .replace("PUT_OTN_TOKEN", rs.getString("token") != null ? rs.getString("token") : "")
-                                     .replace("PUT_SUBSCRIBER_ID", rs.getString("subscribe_id") != null ? rs.getString("subscribe_id") : "")
-                                     .replace("#SUBSCRIBER_ID_REPLACE#", rs.getString("subscribe_id") != null ? rs.getString("subscribe_id") : "");
-    
+
+                    // Replace placeholders
+                    String message = rawMessage
+                            .replace("{{first_name}}", Optional.ofNullable(rs.getString("lead_name")).orElse(""))
+                            .replace("{{last_name}}", Optional.ofNullable(rs.getString("lead_last_name")).orElse(""))
+                            .replace("PUT_OTN_TOKEN", Optional.ofNullable(rs.getString("token")).orElse(""))
+                            .replace("PUT_SUBSCRIBER_ID", Optional.ofNullable(rs.getString("subscribe_id")).orElse(""))
+                            .replace("#SUBSCRIBER_ID_REPLACE#",
+                                    Optional.ofNullable(rs.getString("subscribe_id")).orElse(""));
+
+                    // Validate JSON format
+                    JSONObject messageJson;
+                    try {
+                        messageJson = new JSONObject(message.trim());
+                    } catch (JSONException e) {
+                        LoggerUtil.warn("Skipping malformed message for campaign " + campaignId + ": " + message);
+                        LoggerUtil.warn("Reason: " + e.getMessage());
+                        continue; // Skip malformed message
+                    }
+
                     JSONObject item = new JSONObject();
-                    item.put("data", new JSONObject(){{
-                        put("messenger_bot_broadcast_serial", campaignId);
-                        put("messenger_bot_broadcast_serial_send", rs.getInt("messenger_bot_broadcast_serial_send"));
-                        put("messenger_bot_subscriber", rs.getInt("messenger_bot_subscriber"));
-                    }});
-    
+                    item.put("data", new JSONObject() {
+                        {
+                            put("messenger_bot_broadcast_serial", campaignId);
+                            put("messenger_bot_broadcast_serial_send",
+                                    rs.getInt("messenger_bot_broadcast_serial_send"));
+                            put("messenger_bot_subscriber", rs.getInt("messenger_bot_subscriber"));
+                        }
+                    });
+
                     JSONObject request = new JSONObject();
-                    request.put("url", "https://graph.facebook.com/v22.0/me/messages?access_token=" + rs.getString("token"));
-                    request.put("data", new JSONObject(message));
-    
+                    request.put("url",
+                            "https://graph.facebook.com/v22.0/me/messages?access_token=" + rs.getString("token"));
+                    request.put("data", messageJson);
+
                     item.put("request", request);
                     result.put(item);
                 }
             }
         }
+
         return result;
     }
-    
+
     private List<Integer> fetchScheduledCampaigns(int limit) throws SQLException {
         String query = """
                     SELECT id FROM messenger_bot_broadcast_serial
@@ -374,14 +394,14 @@ public class WorkerSendMessage {
 
     private void markCampaignLoggersAsSending(int campaignId) {
         String sql = """
-            UPDATE messenger_bot_broadcast_serial_logger 
-            SET status = 5 
-            WHERE status = 2 AND id IN (
-                SELECT logger_id 
-                FROM messenger_bot_broadcast_serial_logger_serial 
-                WHERE serial_id = ?
-            )
-        """;
+                    UPDATE messenger_bot_broadcast_serial_logger
+                    SET status = 5
+                    WHERE status = 2 AND id IN (
+                        SELECT logger_id
+                        FROM messenger_bot_broadcast_serial_logger_serial
+                        WHERE serial_id = ?
+                    )
+                """;
 
         try (PreparedStatement stmt = dbConnection.prepareStatement(sql)) {
             stmt.setInt(1, campaignId);
@@ -395,13 +415,13 @@ public class WorkerSendMessage {
         // Add rate limiting check at start
         boolean allowSecond = FileRateLimiter.allow("yyyyMMdd_HHmmss", rateLimitPerSecond);
         boolean allowMinute = FileRateLimiter.allow("yyyyMMdd_HHmm", rateLimitPerMinute);
-        
+
         if (!allowSecond || !allowMinute) {
             channel.basicReject(delivery.getEnvelope().getDeliveryTag(), true);
             LoggerUtil.debug("Rate limit exceeded - message requeued");
             return;
         }
-        
+
         // Only log at DEBUG level when really needed
         if (LoggerUtil.isDebugEnabled()) {
             LoggerUtil.debug("Starting processing message");
