@@ -251,8 +251,8 @@ public class WorkerSendMessage {
                         r.request_url AS url,
                         r.request_data AS data
                     FROM messenger_bot_broadcast_serial_send s
-                    JOIN messenger_bot_broadcast_serial_request r ON r.id = s.request_id
-                    WHERE s.campaign_id = ? AND s.processed = 0
+                    LEFT JOIN messenger_bot_broadcast_serial_request r ON r.id = s.request_id
+                    WHERE s.campaign_id = ? AND s.processed = '0'
                     LIMIT 100
                 """;
 
@@ -265,11 +265,15 @@ public class WorkerSendMessage {
                     item.put("messenger_bot_broadcast_serial_send", rs.getInt("messenger_bot_broadcast_serial_send"));
                     item.put("messenger_bot_subscriber", rs.getInt("messenger_bot_subscriber"));
 
-                    JSONObject request = new JSONObject();
-                    request.put("url", rs.getString("url"));
-                    request.put("data", new JSONObject(rs.getString("data")));
+                    // Only add request details if url is not null
+                    String url = rs.getString("url");
+                    if (url != null) {
+                        JSONObject request = new JSONObject();
+                        request.put("url", url);
+                        request.put("data", new JSONObject(rs.getString("data")));
+                        item.put("request", request);
+                    }
 
-                    item.put("request", request);
                     result.put(item);
                 }
             }

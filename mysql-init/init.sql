@@ -15,6 +15,7 @@ DROP TABLE IF EXISTS `facebook_rx_fb_page_info`;
 DROP TABLE IF EXISTS `messenger_bot_subscriber`;
 DROP TABLE IF EXISTS `messenger_bot_broadcast_serial_logger`;
 DROP TABLE IF EXISTS `messenger_bot_broadcast_serial_logger_serial`;
+DROP TABLE IF EXISTS `messenger_bot_broadcast_serial_request`;
 
 -- 2. Create tables
 
@@ -47,10 +48,21 @@ CREATE TABLE IF NOT EXISTS `messenger_bot_broadcast_serial` (
   `completed_at` DATETIME DEFAULT NULL
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
 
+-- Request table for broadcast serial
+CREATE TABLE IF NOT EXISTS `messenger_bot_broadcast_serial_request` (
+  `id` INT NOT NULL AUTO_INCREMENT PRIMARY KEY,
+  `campaign_id` INT NOT NULL,
+  `request_url` VARCHAR(255) NOT NULL,
+  `request_data` TEXT NOT NULL,
+  `created_at` DATETIME DEFAULT CURRENT_TIMESTAMP,
+  KEY `idx_campaign_id` (`campaign_id`)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
+
 -- Messages table
 CREATE TABLE IF NOT EXISTS `messenger_bot_broadcast_serial_send` (
   `id` INT NOT NULL AUTO_INCREMENT PRIMARY KEY,
   `campaign_id` INT NOT NULL,
+  `request_id` INT DEFAULT NULL,
   `user_id` INT NOT NULL DEFAULT 1,
   `page_id` INT NOT NULL DEFAULT 1,
   `messenger_bot_subscriber` INT NOT NULL DEFAULT 0,
@@ -65,7 +77,8 @@ CREATE TABLE IF NOT EXISTS `messenger_bot_broadcast_serial_send` (
   `message_sent_id` VARCHAR(255) NOT NULL DEFAULT '',
   `sent_time` DATETIME DEFAULT NULL,
   `processed_by` VARCHAR(30) DEFAULT NULL,
-  KEY `idx_campaign_processed` (`campaign_id`, `processed`)
+  KEY `idx_campaign_processed` (`campaign_id`, `processed`),
+  FOREIGN KEY (`request_id`) REFERENCES `messenger_bot_broadcast_serial_request`(`id`) ON DELETE SET NULL
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
 
 -- Subscriber table
