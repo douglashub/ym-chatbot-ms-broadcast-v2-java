@@ -8,14 +8,14 @@ FLUSH PRIVILEGES;
 
 USE `ym-chatbot`;
 
--- 1. Drop old tables
+-- 1. Drop tables in an order that respects foreign key constraints
+DROP TABLE IF EXISTS `messenger_bot_broadcast_serial_logger_serial`;
 DROP TABLE IF EXISTS `messenger_bot_broadcast_serial_send`;
+DROP TABLE IF EXISTS `messenger_bot_broadcast_serial_request`;
+DROP TABLE IF EXISTS `messenger_bot_broadcast_serial_logger`;
+DROP TABLE IF EXISTS `messenger_bot_subscriber`;
 DROP TABLE IF EXISTS `messenger_bot_broadcast_serial`;
 DROP TABLE IF EXISTS `facebook_rx_fb_page_info`;
-DROP TABLE IF EXISTS `messenger_bot_subscriber`;
-DROP TABLE IF EXISTS `messenger_bot_broadcast_serial_logger`;
-DROP TABLE IF EXISTS `messenger_bot_broadcast_serial_logger_serial`;
-DROP TABLE IF EXISTS `messenger_bot_broadcast_serial_request`;
 
 -- 2. Create tables
 
@@ -55,7 +55,16 @@ CREATE TABLE IF NOT EXISTS `messenger_bot_broadcast_serial_request` (
   `request_url` VARCHAR(255) NOT NULL,
   `request_data` TEXT NOT NULL,
   `created_at` DATETIME DEFAULT CURRENT_TIMESTAMP,
-  KEY `idx_campaign_id` (`campaign_id`)
+  KEY `idx_campaign_id` (`campaign_id`),
+  FOREIGN KEY (`campaign_id`) REFERENCES `messenger_bot_broadcast_serial`(`id`) ON DELETE CASCADE
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
+
+-- Subscriber table
+CREATE TABLE IF NOT EXISTS `messenger_bot_subscriber` (
+  `id` INT NOT NULL AUTO_INCREMENT,
+  `last_error_message` TEXT,
+  `unavailable` TINYINT(1) NOT NULL DEFAULT 0,
+  PRIMARY KEY (`id`)
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
 
 -- Messages table
@@ -78,30 +87,28 @@ CREATE TABLE IF NOT EXISTS `messenger_bot_broadcast_serial_send` (
   `sent_time` DATETIME DEFAULT NULL,
   `processed_by` VARCHAR(30) DEFAULT NULL,
   KEY `idx_campaign_processed` (`campaign_id`, `processed`),
+  FOREIGN KEY (`campaign_id`) REFERENCES `messenger_bot_broadcast_serial`(`id`) ON DELETE CASCADE,
   FOREIGN KEY (`request_id`) REFERENCES `messenger_bot_broadcast_serial_request`(`id`) ON DELETE SET NULL
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
 
--- Subscriber table
-CREATE TABLE IF NOT EXISTS `messenger_bot_subscriber` (
-  `id` INT NOT NULL AUTO_INCREMENT,
-  `last_error_message` TEXT,
-  `unavailable` TINYINT(1) NOT NULL DEFAULT 0,
-  PRIMARY KEY (`id`)
-) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
-
--- Broadcast serial logger table (for future use)
+-- Broadcast serial logger table
 CREATE TABLE IF NOT EXISTS `messenger_bot_broadcast_serial_logger` (
   `id` INT NOT NULL AUTO_INCREMENT,
-  `status` TINYINT NOT NULL DEFAULT 2,
+  `user_id` INT NOT NULL DEFAULT 1,
+  `page_id` INT NOT NULL DEFAULT 1,
+  `status` TINYINT NOT NULL DEFAULT 2 COMMENT '2=pending, 5=sending',
+  `created_at` DATETIME DEFAULT CURRENT_TIMESTAMP,
   PRIMARY KEY (`id`)
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
 
--- Broadcast serial logger serial table (for future use)
+-- Broadcast serial logger serial table
 CREATE TABLE IF NOT EXISTS `messenger_bot_broadcast_serial_logger_serial` (
   `id` INT NOT NULL AUTO_INCREMENT,
   `logger_id` INT NOT NULL,
   `serial_id` INT NOT NULL,
-  PRIMARY KEY (`id`)
+  PRIMARY KEY (`id`),
+  FOREIGN KEY (`logger_id`) REFERENCES `messenger_bot_broadcast_serial_logger`(`id`) ON DELETE CASCADE,
+  FOREIGN KEY (`serial_id`) REFERENCES `messenger_bot_broadcast_serial`(`id`) ON DELETE CASCADE
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
 
 -- 3. Insert initial data

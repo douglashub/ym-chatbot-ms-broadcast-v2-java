@@ -15,8 +15,8 @@ spring:
 application:
   rate-limit:
     script:
-      seconds: ${SCRIPT_RATE_LIMIT_IN_SECONDS:10000}
-      minutes: ${SCRIPT_RATE_LIMIT_IN_MINUTES:600000}
+      seconds: ${SCRIPT_RATE_LIMIT_IN_SECONDS:10000}  # Messages per second
+      minutes: ${SCRIPT_RATE_LIMIT_IN_MINUTES:600000}  # Messages per minute
 
   worker:
     send-message:

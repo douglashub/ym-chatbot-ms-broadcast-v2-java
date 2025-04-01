@@ -36,12 +36,9 @@ import org.springframework.context.annotation.Import;
 import static org.junit.jupiter.api.Assertions.assertNotEquals;
 
 @ExtendWith(SpringExtension.class)
-@SpringBootTest(
-    properties = "spring.config.location=classpath:application-test.yml", 
-    webEnvironment = SpringBootTest.WebEnvironment.NONE
-)
+@SpringBootTest(properties = "spring.config.location=classpath:application-test.yml", webEnvironment = SpringBootTest.WebEnvironment.NONE)
 @ActiveProfiles("test")
-@ComponentScan(basePackages = {"com.ymchatbot"})  // Add this line
+@ComponentScan(basePackages = { "com.ymchatbot" }) // Add this line
 public class StressUpdateStatusTest {
 
     @Value("${spring.rabbitmq.host}")
@@ -78,84 +75,126 @@ public class StressUpdateStatusTest {
         // Garantir que as tabelas necessárias existam
         setupDatabase();
     }
-
     private void setupDatabase() throws SQLException {
         try (java.sql.Connection conn = DriverManager.getConnection(dbUrl, dbUsername, dbPassword);
-             Statement stmt = conn.createStatement()) {
-
-            // Eliminar tabelas existentes
+             java.sql.Statement stmt = conn.createStatement()) {
+    
+            // Desativa checagens de chave estrangeira temporariamente (opcional)
+            stmt.execute("SET FOREIGN_KEY_CHECKS=0");
+    
+            // Drop das tabelas, na ordem certa para evitar problemas de FK
+            stmt.execute("DROP TABLE IF EXISTS messenger_bot_broadcast_serial_logger_serial");
             stmt.execute("DROP TABLE IF EXISTS messenger_bot_broadcast_serial_send");
             stmt.execute("DROP TABLE IF EXISTS messenger_bot_broadcast_serial");
             stmt.execute("DROP TABLE IF EXISTS facebook_rx_fb_page_info");
-
-            // Criar tabela de páginas do Facebook
-            stmt.execute("CREATE TABLE facebook_rx_fb_page_info (" +
-                    "id INT NOT NULL AUTO_INCREMENT PRIMARY KEY, " +
-                    "user_id INT NOT NULL DEFAULT 1, " +
-                    "page_id VARCHAR(200) NOT NULL, " +
-                    "page_name VARCHAR(200) NULL, " +
-                    "page_access_token TEXT NOT NULL, " +
-                    "KEY idx_page_id (page_id))");
-
-            // Inserir dados de exemplo para a página
-            stmt.execute("INSERT INTO facebook_rx_fb_page_info (user_id, page_id, page_name, page_access_token) " +
-                    "VALUES (1, '123456789', 'Test Page', 'EAABODYFiZBWwBANcZAgHD6k...(token simulado)')");
-
-            // Criar tabela de campanhas
-            stmt.execute("CREATE TABLE messenger_bot_broadcast_serial (" +
-                    "id INT NOT NULL PRIMARY KEY, " +
-                    "user_id INT NOT NULL DEFAULT 1, " +
-                    "page_id INT NOT NULL DEFAULT 1, " +
-                    "fb_page_id VARCHAR(200) NOT NULL DEFAULT '', " +
-                    "posting_status TINYINT NOT NULL DEFAULT 0, " +
-                    "is_try_again TINYINT NOT NULL DEFAULT 0, " +
-                    "successfully_sent INT NOT NULL DEFAULT 0, " +
-                    "successfully_delivered INT NOT NULL DEFAULT 0, " +
-                    "last_try_error_count INT NOT NULL DEFAULT 0, " +
-                    "total_thread INT NOT NULL DEFAULT 0, " +
-                    "schedule_time DATETIME DEFAULT CURRENT_TIMESTAMP, " +
-                    "created_at DATETIME DEFAULT CURRENT_TIMESTAMP, " +
-                    "completed_at DATETIME DEFAULT NULL)");
-
-            // Criar tabela de mensagens (incluindo as colunas adicionais)
-            stmt.execute("CREATE TABLE messenger_bot_broadcast_serial_send (" +
-                    "id INT NOT NULL AUTO_INCREMENT PRIMARY KEY, " +
-                    "campaign_id INT NOT NULL, " +
-                    "user_id INT NOT NULL DEFAULT 1, " +
-                    "page_id INT NOT NULL DEFAULT 1, " +
-                    "messenger_bot_subscriber INT NOT NULL DEFAULT 0, " +
-                    "subscriber_auto_id INT NOT NULL, " +
-                    "subscribe_id VARCHAR(255) NOT NULL DEFAULT '', " +
-                    "subscriber_name VARCHAR(255) NOT NULL DEFAULT '', " +
-                    "subscriber_lastname VARCHAR(200) NOT NULL DEFAULT '', " +
-                    "delivered ENUM('0','1') NOT NULL DEFAULT '0', " +
-                    "delivery_time DATETIME DEFAULT NULL, " +
-                    "processed ENUM('0','1') NOT NULL DEFAULT '0', " +
-                    "error_message TEXT, " +
-                    "message_sent_id VARCHAR(255) NOT NULL DEFAULT '', " +
-                    "sent_time DATETIME DEFAULT NULL, " +
-                    "processed_by VARCHAR(30) DEFAULT NULL, " +
-                    "KEY idx_campaign_processed (campaign_id, processed))");
-
-            // Add creation of subscriber table
             stmt.execute("DROP TABLE IF EXISTS messenger_bot_subscriber");
-            stmt.execute("CREATE TABLE messenger_bot_subscriber (" +
-                    "id INT NOT NULL AUTO_INCREMENT PRIMARY KEY, " +
-                    "last_error_message TEXT, " +
-                    "unavailable TINYINT(1) NOT NULL DEFAULT 0)");
-
-            // Populate subscriber table with initial records
+            stmt.execute("DROP TABLE IF EXISTS messenger_bot_broadcast_serial_logger");
+    
+            // Reativa checagens de FK
+            stmt.execute("SET FOREIGN_KEY_CHECKS=1");
+    
+            // Cria tabela de páginas do Facebook
+            stmt.execute("""
+                CREATE TABLE facebook_rx_fb_page_info (
+                  id INT NOT NULL AUTO_INCREMENT PRIMARY KEY,
+                  user_id INT NOT NULL DEFAULT 1,
+                  page_id VARCHAR(200) NOT NULL,
+                  page_name VARCHAR(200) NULL,
+                  page_access_token TEXT NOT NULL,
+                  KEY idx_page_id (page_id)
+                ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4
+            """);
+    
+            // Insere dados fictícios
+            stmt.execute("""
+                INSERT INTO facebook_rx_fb_page_info (user_id, page_id, page_name, page_access_token)
+                VALUES (1, '123456789', 'Test Page', 'EAABODYFiZBWwBANcZAgHD6k...(token simulado)')
+            """);
+    
+            // Cria tabela de campanhas
+            stmt.execute("""
+                CREATE TABLE messenger_bot_broadcast_serial (
+                  id INT NOT NULL PRIMARY KEY,
+                  user_id INT NOT NULL DEFAULT 1,
+                  page_id INT NOT NULL DEFAULT 1,
+                  fb_page_id VARCHAR(200) NOT NULL DEFAULT '',
+                  message MEDIUMTEXT,
+                  posting_status TINYINT NOT NULL DEFAULT 0,
+                  is_try_again TINYINT NOT NULL DEFAULT 0,
+                  successfully_sent INT NOT NULL DEFAULT 0,
+                  successfully_delivered INT NOT NULL DEFAULT 0,
+                  last_try_error_count INT NOT NULL DEFAULT 0,
+                  total_thread INT NOT NULL DEFAULT 0,
+                  schedule_time DATETIME DEFAULT CURRENT_TIMESTAMP,
+                  created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+                  completed_at DATETIME DEFAULT NULL
+                ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4
+            """);
+    
+            // Cria tabela de mensagens
+            stmt.execute("""
+                CREATE TABLE messenger_bot_broadcast_serial_send (
+                  id INT NOT NULL AUTO_INCREMENT PRIMARY KEY,
+                  campaign_id INT NOT NULL,
+                  user_id INT NOT NULL DEFAULT 1,
+                  page_id INT NOT NULL DEFAULT 1,
+                  messenger_bot_subscriber INT NOT NULL DEFAULT 0,
+                  subscriber_auto_id INT NOT NULL,
+                  subscribe_id VARCHAR(255) NOT NULL DEFAULT '',
+                  subscriber_name VARCHAR(255) NOT NULL DEFAULT '',
+                  subscriber_lastname VARCHAR(200) NOT NULL DEFAULT '',
+                  delivered ENUM('0','1') NOT NULL DEFAULT '0',
+                  delivery_time DATETIME DEFAULT NULL,
+                  processed ENUM('0','1') NOT NULL DEFAULT '0',
+                  error_message TEXT,
+                  message_sent_id VARCHAR(255) NOT NULL DEFAULT '',
+                  sent_time DATETIME DEFAULT NULL,
+                  processed_by VARCHAR(30) DEFAULT NULL,
+                  KEY idx_campaign_processed (campaign_id, processed)
+                ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4
+            """);
+    
+            // Cria tabela de assinantes
+            stmt.execute("""
+                CREATE TABLE messenger_bot_subscriber (
+                  id INT NOT NULL AUTO_INCREMENT PRIMARY KEY,
+                  last_error_message TEXT,
+                  unavailable TINYINT(1) NOT NULL DEFAULT 0
+                ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4
+            """);
+    
+            // Cria tabela de logs
+            stmt.execute("""
+                CREATE TABLE messenger_bot_broadcast_serial_logger (
+                  id INT NOT NULL AUTO_INCREMENT PRIMARY KEY,
+                  user_id INT NOT NULL DEFAULT 1,
+                  page_id INT NOT NULL DEFAULT 1,
+                  status TINYINT NOT NULL DEFAULT 2,
+                  created_at DATETIME DEFAULT CURRENT_TIMESTAMP
+                ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4
+            """);
+    
+            // Cria tabela de relacionamento entre logger e campanha
+            stmt.execute("""
+                CREATE TABLE messenger_bot_broadcast_serial_logger_serial (
+                  id INT NOT NULL AUTO_INCREMENT PRIMARY KEY,
+                  logger_id INT NOT NULL,
+                  serial_id INT NOT NULL
+                ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4
+            """);
+    
+            // Popula tabela de subscribers com registros simulados
             for (int i = 1; i <= Math.min(100, TOTAL_MESSAGES); i++) {
                 stmt.execute("INSERT INTO messenger_bot_subscriber (id) VALUES (" + (SUBSCRIBER_ID_START + i) + ")");
             }
-
-            // Add index for performance improvement
+    
+            // Índice para performance
             stmt.execute("CREATE INDEX idx_campaign_id ON messenger_bot_broadcast_serial_send (campaign_id)");
-
+    
             System.out.println("📊 Database tables created successfully");
         }
     }
-
+    
     private void waitForWorkerReady() throws InterruptedException {
         System.out.println("⌛ Waiting for worker to be ready...");
         Thread.sleep(5000); // Increased from 2000 ms
@@ -171,14 +210,14 @@ public class StressUpdateStatusTest {
         final int RATE_LIMIT_PER_MINUTE = 12000; // Increased rate limit
         final int RATE_LIMIT_INTERVAL_MS = 60000 / RATE_LIMIT_PER_MINUTE;
         final int MAX_RETRY = 3; // Define MAX_RETRY here
-    
+
         long maxWaitTime = 180_000; // Reduced from 600_000
-    
+
         waitForWorkerReady();
-        
+
         // Inicia o worker de update para processar as mensagens na fila update-status
         workerUpdateStatus.start();
-    
+
         int campaignId = (int) (System.currentTimeMillis() / 1000);
         System.out.printf("🧪 Starting stress test with dynamic campaignId: %d%n", campaignId);
         System.out.printf("📊 Expected success messages: %d, Expected error messages: %d%n",
@@ -203,7 +242,7 @@ public class StressUpdateStatusTest {
         int errorMessages = 0;
 
         try (com.rabbitmq.client.Connection connection = factory.newConnection();
-             Channel channel = connection.createChannel()) {
+                Channel channel = connection.createChannel()) {
 
             channel.queueDeclare(SEND_QUEUE, true, false, false, null);
             channel.queueDeclare(UPDATE_QUEUE, true, false, false, null);
@@ -324,7 +363,7 @@ public class StressUpdateStatusTest {
 
         int messagesConsumed = 0;
         try (com.rabbitmq.client.Connection connection = factory.newConnection();
-             Channel channel = connection.createChannel()) {
+                Channel channel = connection.createChannel()) {
 
             GetResponse response;
             while ((response = channel.basicGet(UPDATE_QUEUE, true)) != null) {
@@ -356,10 +395,12 @@ public class StressUpdateStatusTest {
             // Verifica status das mensagens individuais
             try (PreparedStatement stmt = conn.prepareStatement(
                     "SELECT COUNT(*) as processed_count, " +
-                    "SUM(CASE WHEN processed = '1' AND delivered = '1' THEN 1 ELSE 0 END) as delivered_count, " +
-                    "SUM(CASE WHEN processed = '1' AND error_message IS NOT NULL AND error_message != '' THEN 1 ELSE 0 END) as error_count, " +
-                    "COUNT(DISTINCT message_sent_id) as unique_message_ids " +
-                    "FROM messenger_bot_broadcast_serial_send WHERE campaign_id = ?")) {
+                            "SUM(CASE WHEN processed = '1' AND delivered = '1' THEN 1 ELSE 0 END) as delivered_count, "
+                            +
+                            "SUM(CASE WHEN processed = '1' AND error_message IS NOT NULL AND error_message != '' THEN 1 ELSE 0 END) as error_count, "
+                            +
+                            "COUNT(DISTINCT message_sent_id) as unique_message_ids " +
+                            "FROM messenger_bot_broadcast_serial_send WHERE campaign_id = ?")) {
                 stmt.setInt(1, campaignId);
 
                 try (ResultSet rs = stmt.executeQuery()) {
@@ -370,11 +411,12 @@ public class StressUpdateStatusTest {
                     int errorCount = rs.getInt("error_count");
                     int uniqueMessageIds = rs.getInt("unique_message_ids");
 
-                    int tolerance = Math.max(50, TOTAL_MESSAGES / 20);  // 5% tolerance or at least 50
-                    assertTrue(Math.abs(errorMessages - errorCount) <= tolerance, 
-                              "Number of error messages should be approximately equal to error count (within tolerance " + 
-                              tolerance + "). Expected: " + errorMessages + ", Actual: " + errorCount);
-                    assertEquals(successMessages, deliveredCount, "Number of delivered messages should match success messages");
+                    int tolerance = Math.max(50, TOTAL_MESSAGES / 20); // 5% tolerance or at least 50
+                    assertTrue(Math.abs(errorMessages - errorCount) <= tolerance,
+                            "Number of error messages should be approximately equal to error count (within tolerance " +
+                                    tolerance + "). Expected: " + errorMessages + ", Actual: " + errorCount);
+                    assertEquals(successMessages, deliveredCount,
+                            "Number of delivered messages should match success messages");
                     assertTrue(uniqueMessageIds > 0, "Messages with success should have unique message IDs");
 
                     System.out.println("📊 Detailed Validation:");
@@ -393,8 +435,8 @@ public class StressUpdateStatusTest {
     private void validateSpecificRecords(java.sql.Connection conn, int campaignId) throws SQLException {
         try (PreparedStatement stmt = conn.prepareStatement(
                 "SELECT id, delivered, error_message, message_sent_id " +
-                "FROM messenger_bot_broadcast_serial_send " +
-                "WHERE campaign_id = ? ORDER BY id LIMIT 5")) {
+                        "FROM messenger_bot_broadcast_serial_send " +
+                        "WHERE campaign_id = ? ORDER BY id LIMIT 5")) {
             stmt.setInt(1, campaignId);
             try (ResultSet rs = stmt.executeQuery()) {
                 System.out.println("\n📝 Sample Processed Records:");
@@ -416,8 +458,8 @@ public class StressUpdateStatusTest {
 
         try (PreparedStatement stmt = conn.prepareStatement(
                 "SELECT delivered, COUNT(*) as count " +
-                "FROM messenger_bot_broadcast_serial_send " +
-                "WHERE campaign_id = ? GROUP BY delivered")) {
+                        "FROM messenger_bot_broadcast_serial_send " +
+                        "WHERE campaign_id = ? GROUP BY delivered")) {
             stmt.setInt(1, campaignId);
             try (ResultSet rs = stmt.executeQuery()) {
                 System.out.println("\n📊 Delivery Status Distribution:");
@@ -430,30 +472,30 @@ public class StressUpdateStatusTest {
                 }
                 int delivered = deliveryStats.getOrDefault("1", 0);
                 int notDelivered = deliveryStats.getOrDefault("0", 0);
-                
+
                 // Verificação do total de mensagens
                 assertEquals(TOTAL_MESSAGES, delivered + notDelivered,
                         "Total delivered and not delivered messages should equal total messages");
-                
+
                 // Verificações flexíveis para acomodar variações
                 int tolerance = Math.max(50, TOTAL_MESSAGES / 20); // 5% de tolerância ou pelo menos 50
                 int expectedDelivered = (TOTAL_MESSAGES * 2) / 3;
                 assertTrue(Math.abs(delivered - expectedDelivered) <= tolerance,
-                        "Delivered messages should be approximately 2/3 of total (expected " + 
-                        expectedDelivered + " ± " + tolerance + ", got " + delivered + ")");
-                
+                        "Delivered messages should be approximately 2/3 of total (expected " +
+                                expectedDelivered + " ± " + tolerance + ", got " + delivered + ")");
+
                 int expectedNotDelivered = TOTAL_MESSAGES / 3;
                 assertTrue(Math.abs(notDelivered - expectedNotDelivered) <= tolerance,
-                        "Not delivered messages should be approximately 1/3 of total (expected " + 
-                        expectedNotDelivered + " ± " + tolerance + ", got " + notDelivered + ")");
+                        "Not delivered messages should be approximately 1/3 of total (expected " +
+                                expectedNotDelivered + " ± " + tolerance + ", got " + notDelivered + ")");
             }
         }
     }
 
     private void insertCampaignIfNotExists(int campaignId) throws SQLException {
         try (java.sql.Connection conn = DriverManager.getConnection(dbUrl, dbUsername, dbPassword);
-             Statement stmt = conn.createStatement();
-             ResultSet rs = stmt.executeQuery("SELECT id FROM facebook_rx_fb_page_info LIMIT 1")) {
+                Statement stmt = conn.createStatement();
+                ResultSet rs = stmt.executeQuery("SELECT id FROM facebook_rx_fb_page_info LIMIT 1")) {
             int pageId = 0;
             if (rs.next()) {
                 pageId = rs.getInt("id");
@@ -468,7 +510,8 @@ public class StressUpdateStatusTest {
                 insertStmt.setInt(2, pageId);
                 insertStmt.setInt(3, TOTAL_MESSAGES);
                 insertStmt.executeUpdate();
-                System.out.printf("📌 Inserted test campaign with id: %d associated with page id: %d%n", campaignId, pageId);
+                System.out.printf("📌 Inserted test campaign with id: %d associated with page id: %d%n", campaignId,
+                        pageId);
             }
             System.out.println("📌 Inserting individual message records...");
             String batchSql = "INSERT INTO messenger_bot_broadcast_serial_send " +
@@ -503,9 +546,9 @@ public class StressUpdateStatusTest {
 
     private int getProcessedCount(int campaignId) throws SQLException {
         try (java.sql.Connection conn = DriverManager.getConnection(dbUrl, dbUsername, dbPassword);
-             PreparedStatement stmt = conn.prepareStatement(
-                     "SELECT COUNT(*) FROM messenger_bot_broadcast_serial_send " +
-                     "WHERE campaign_id = ? AND processed = '1'")) {
+                PreparedStatement stmt = conn.prepareStatement(
+                        "SELECT COUNT(*) FROM messenger_bot_broadcast_serial_send " +
+                                "WHERE campaign_id = ? AND processed = '1'")) {
             stmt.setInt(1, campaignId);
             try (ResultSet rs = stmt.executeQuery()) {
                 return rs.next() ? rs.getInt(1) : 0;
@@ -515,11 +558,12 @@ public class StressUpdateStatusTest {
 
     private void logProcessingProgress(int campaignId) throws SQLException {
         try (java.sql.Connection conn = DriverManager.getConnection(dbUrl, dbUsername, dbPassword);
-             PreparedStatement stmt = conn.prepareStatement(
-                     "SELECT " +
-                     "SUM(CASE WHEN processed = '1' AND delivered = '1' THEN 1 ELSE 0 END) as success_count, " +
-                     "SUM(CASE WHEN processed = '1' AND delivered = '0' THEN 1 ELSE 0 END) as error_count " +
-                     "FROM messenger_bot_broadcast_serial_send WHERE campaign_id = ?")) {
+                PreparedStatement stmt = conn.prepareStatement(
+                        "SELECT " +
+                                "SUM(CASE WHEN processed = '1' AND delivered = '1' THEN 1 ELSE 0 END) as success_count, "
+                                +
+                                "SUM(CASE WHEN processed = '1' AND delivered = '0' THEN 1 ELSE 0 END) as error_count " +
+                                "FROM messenger_bot_broadcast_serial_send WHERE campaign_id = ?")) {
             stmt.setInt(1, campaignId);
             try (ResultSet rs = stmt.executeQuery()) {
                 if (rs.next()) {
