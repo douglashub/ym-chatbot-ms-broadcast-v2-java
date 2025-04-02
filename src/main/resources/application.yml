@@ -4,6 +4,12 @@ spring:
     username: ${DB_USERNAME:dbuser}
     password: ${DB_PASSWORD:dbpassword}
     driver-class-name: org.mariadb.jdbc.Driver
+    hikari:
+      maximum-pool-size: 5
+      minimum-idle: 2
+      idle-timeout: 30000
+      max-lifetime: 600000
+      connection-timeout: 30000
 
   rabbitmq:
     host: ${AMQP_HOST:localhost}
@@ -11,21 +17,31 @@ spring:
     username: ${AMQP_USERNAME:guest}
     password: ${AMQP_PASSWORD:guest}
     virtual-host: ${AMQP_VHOST:/}
+    listener:
+      simple:
+        acknowledge-mode: auto
+        prefetch: 50
+        retry:
+          enabled: true
+          max-attempts: 3
+          initial-interval: 1000ms
+          max-interval: 10000ms
+          multiplier: 2.0
 
 application:
   rate-limit:
     script:
-      seconds: ${SCRIPT_RATE_LIMIT_IN_SECONDS:10000}  # Messages per second
-      minutes: ${SCRIPT_RATE_LIMIT_IN_MINUTES:600000}  # Messages per minute
+      seconds: ${SCRIPT_RATE_LIMIT_IN_SECONDS:10000}
+      minutes: ${SCRIPT_RATE_LIMIT_IN_MINUTES:600000}
 
   worker:
     send-message:
       replicas: ${WORKER_SEND_MESSAGE_REPLICAS:10}
-      scheduled-fetch-limit: ${WORKER_SCHEDULED_FETCH_LIMIT:10}  # 🔄 limite de campanhas por ciclo
-      enable-campaign-locking: ${ENABLE_CAMPAIGN_LOCKING:true}   # ✅ ativa marcação com posting_status = 1
-      processed-by: ${PROCESSED_BY:java-ms-v2}                   # 🧾 identificador padrão
+      scheduled-fetch-limit: ${WORKER_SCHEDULED_FETCH_LIMIT:10}
+      enable-campaign-locking: ${ENABLE_CAMPAIGN_LOCKING:true}
+      processed-by: ${PROCESSED_BY:java-ms-v2}
     update-status:
-      concurrent-consumers: ${UPDATE_STATUS_CONCURRENT_CONSUMERS:10}
+      concurrent-consumers: ${UPDATE_STATUS_CONCURRENT_CONSUMERS:20}
 
 server:
   port: 8080

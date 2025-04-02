@@ -29,6 +29,7 @@ services:
       - --innodb-flush-method=O_DIRECT 
       - --innodb-use-native-aio=0
       - --default-authentication-plugin=mysql_native_password
+      - --max_connections=500
     environment:
       - MARIADB_ROOT_PASSWORD=rootpassword
       - MARIADB_DATABASE=ym-chatbot
@@ -53,7 +54,7 @@ services:
     build:
       context: .
       dockerfile: Dockerfile
-    restart: on-failure
+    restart: unless-stopped
     depends_on:
       rabbitmq:
         condition: service_healthy
@@ -63,24 +64,26 @@ services:
       - "./storage:/app/storage"
     environment:
       - SPRING_PROFILES_ACTIVE=prod
-      - DOCKER_ENV=true
-      - SPRING_DATASOURCE_URL=jdbc:mariadb://mariadb:3306/ym-chatbot?useUnicode=true&characterEncoding=utf8&useSSL=false&allowPublicKeyRetrieval=true
+      - SPRING_DATASOURCE_URL=jdbc:mariadb://mariadb:3306/ym-chatbot?useUnicode=true&characterEncoding=utf8&useSSL=false&allowPublicKeyRetrieval=true&connectTimeout=30000&socketTimeout=60000
+      - SPRING_RABBITMQ_TEMPLATE_RECEIVE_TIMEOUT=30000
       - SPRING_DATASOURCE_USERNAME=dbuser
       - SPRING_DATASOURCE_PASSWORD=dbpassword
       - SPRING_RABBITMQ_HOST=rabbitmq
       - SPRING_RABBITMQ_PORT=5672
       - SPRING_RABBITMQ_USERNAME=guest
       - SPRING_RABBITMQ_PASSWORD=guest
+      - SPRING_RABBITMQ_CACHE_CHANNEL_SIZE=25
+      - SPRING_RABBITMQ_REQUESTED_HEARTBEAT=60
       - SCRIPT_RATE_LIMIT_IN_SECONDS=50000
       - SCRIPT_RATE_LIMIT_IN_MINUTES=1000000
-      - WORKER_SEND_MESSAGE_REPLICAS=10
-      - UPDATE_STATUS_CONCURRENT_CONSUMERS=10
-      - JAVA_OPTS=-Xms1G -Xmx2G
+      - WORKER_SEND_MESSAGE_REPLICAS=22
+      - UPDATE_STATUS_CONCURRENT_CONSUMERS=19
+      - JAVA_OPTS=-XX:+UseContainerSupport -XX:MaxRAMPercentage=75.0 -Xms512m -Xmx1536m -XX:+HeapDumpOnOutOfMemoryError
     networks:
       - app_network
     deploy:
       mode: replicated
-      replicas: ${WORKER_SEND_MESSAGE_REPLICAS:-10}
+      replicas: ${WORKER_SEND_MESSAGE_REPLICAS:-22}
       resources:
         limits:
           cpus: '2'
@@ -88,8 +91,8 @@ services:
       restart_policy:
         condition: on-failure
         delay: 5s
-        max_attempts: 3
-        window: 120s
+        max_attempts: 5
+        window: 180s
 
 networks:
   app_network:
