@@ -1,5 +1,7 @@
 package com.ymchatbot;
 
+import com.fasterxml.jackson.databind.ObjectMapper;
+import com.fasterxml.jackson.databind.node.ObjectNode;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
@@ -11,6 +13,7 @@ import java.nio.file.Paths;
 import java.nio.file.StandardOpenOption;
 import java.nio.charset.StandardCharsets;
 import java.io.IOException;
+import java.util.Arrays;
 
 /**
  * Utility class for logging using both SLF4J and file-based logging
@@ -19,6 +22,7 @@ public class LoggerUtil {
     private static final Logger logger = LoggerFactory.getLogger(LoggerUtil.class);
     private static final DateTimeFormatter DATE_FORMATTER = DateTimeFormatter.ofPattern("yyyy-MM-dd");
     private static final DateTimeFormatter TIMESTAMP_FORMATTER = DateTimeFormatter.ofPattern("yyyy-MM-dd HH:mm:ss");
+    private static final ObjectMapper objectMapper = new ObjectMapper();
 
     /**
      * Log a debug message to both SLF4J and a file
@@ -48,15 +52,19 @@ public class LoggerUtil {
      */
     public static void error(String message, Throwable throwable) {
         logger.error(message, throwable);
-        logToFile("ERROR", message + " - " + throwable.getMessage());
+        
+        try {
+            ObjectNode errorNode = objectMapper.createObjectNode()
+                .put("message", message)
+                .put("errorType", throwable.getClass().getName())
+                .put("errorMessage", throwable.getMessage())
+                .put("stackTrace", Arrays.toString(throwable.getStackTrace()));
 
-        // Also log stack trace to file for better debugging
-        StringBuilder sb = new StringBuilder();
-        for (StackTraceElement element : throwable.getStackTrace()) {
-            sb.append("    at ").append(element.toString()).append("\n");
+            logToFile("ERROR", objectMapper.writeValueAsString(errorNode));
+        } catch (Exception e) {
+            logger.error("Erro ao serializar exceção", e);
+            logToFile("ERROR", message + " - " + throwable.getMessage());
         }
-
-        logToFile("TRACE", sb.toString());
     }
 
     /**
@@ -93,8 +101,13 @@ public class LoggerUtil {
             // Create parent directories if they don't exist
             Files.createDirectories(Paths.get("../storage/logs"));
 
-            String timestamp = LocalDateTime.now().format(TIMESTAMP_FORMATTER);
-            String logEntry = timestamp + " :" + level + ": " + message + System.lineSeparator();
+            // Criar estrutura JSON do log usando ObjectMapper
+            ObjectNode logNode = objectMapper.createObjectNode()
+                .put("timestamp", LocalDateTime.now().format(TIMESTAMP_FORMATTER))
+                .put("level", level)
+                .put("message", message);
+
+            String logEntry = objectMapper.writeValueAsString(logNode) + System.lineSeparator();
 
             Files.write(
                     Paths.get(logFile),
