@@ -1,37 +1,40 @@
 package com.ymchatbot;
 
-import org.json.JSONArray;
-import org.json.JSONException;
-import org.json.JSONObject;
+import com.fasterxml.jackson.core.JsonProcessingException;
+import com.fasterxml.jackson.databind.ObjectMapper;
+import com.fasterxml.jackson.databind.node.ArrayNode;
+import com.fasterxml.jackson.databind.node.ObjectNode;
 
 /**
- * Utility class to validate and standardize message formats
+ * Utility class to validate and standardize message formats using Jackson
  */
 public class MessageValidator {
+    private static final ObjectMapper objectMapper = new ObjectMapper();
 
     /**
      * Validates and standardizes a message to ensure it's a valid JSON array
      * 
      * @param messageBody The raw message body string
-     * @return A standardized JSONArray
-     * @throws JSONException If the message cannot be parsed as JSON
+     * @param mapper The ObjectMapper instance to use
+     * @return A standardized ArrayNode
+     * @throws JsonProcessingException If the message cannot be parsed as JSON
      */
-    public static JSONArray validateAndStandardize(String messageBody) throws JSONException {
+    public static ArrayNode validateAndStandardize(String messageBody, ObjectMapper mapper) throws JsonProcessingException {
         if (messageBody == null || messageBody.trim().isEmpty()) {
-            return new JSONArray();
+            return mapper.createArrayNode();
         }
 
         try {
-            // Try parsing as JSONArray first
-            return new JSONArray(messageBody);
-        } catch (JSONException e) {
+            // Try parsing as ArrayNode first
+            return (ArrayNode) mapper.readTree(messageBody);
+        } catch (JsonProcessingException e) {
             try {
-                // If not an array, try as a single JSONObject and wrap it
-                JSONObject jsonObject = new JSONObject(messageBody);
-                JSONArray array = new JSONArray();
-                array.put(jsonObject);
+                // If not an array, try as a single ObjectNode and wrap it
+                ObjectNode jsonObject = (ObjectNode) mapper.readTree(messageBody);
+                ArrayNode array = mapper.createArrayNode();
+                array.add(jsonObject);
                 return array;
-            } catch (JSONException e2) {
+            } catch (JsonProcessingException e2) {
                 LoggerUtil.error("Message is neither a valid JSON array nor object: " +
                         messageBody.substring(0, Math.min(100, messageBody.length())) + "...");
                 throw e2; // Re-throw the exception to be handled by the caller
@@ -42,26 +45,26 @@ public class MessageValidator {
     /**
      * Extracts campaign ID from a message item
      * 
-     * @param item JSONObject representing a message item
+     * @param item ObjectNode representing a message item
      * @return campaign ID
-     * @throws JSONException if campaign ID cannot be found
+     * @throws IllegalArgumentException if campaign ID cannot be found
      */
-    public static int extractCampaignId(JSONObject item) throws JSONException {
+    public static int extractCampaignId(ObjectNode item) {
         try {
-            if (item.has("data") && !item.isNull("data")) {
-                return item.getJSONObject("data").getInt("messenger_bot_broadcast_serial");
+            if (item.has("data") && !item.get("data").isNull()) {
+                return item.get("data").get("messenger_bot_broadcast_serial").asInt();
             }
-        } catch (JSONException e) {
+        } catch (Exception e) {
             // Ignore and try alternatives
         }
 
         try {
-            return item.getInt("messenger_bot_broadcast_serial");
-        } catch (JSONException e) {
+            return item.get("messenger_bot_broadcast_serial").asInt();
+        } catch (Exception e) {
             try {
-                return item.getInt("campaign_id");
-            } catch (JSONException e2) {
-                throw new JSONException("Unable to find campaign ID in message");
+                return item.get("campaign_id").asInt();
+            } catch (Exception e2) {
+                throw new IllegalArgumentException("Unable to find campaign ID in message");
             }
         }
     }
@@ -70,32 +73,32 @@ public class MessageValidator {
      * Normalizes a request object to ensure it has the expected structure
      * 
      * @param item The message item to normalize
+     * @param mapper The ObjectMapper instance to use
      * @return A normalized message item with proper request structure
-     * @throws JSONException If the message cannot be normalized
      */
-    public static JSONObject normalizeRequestStructure(JSONObject item) throws JSONException {
+    public static ObjectNode normalizeRequestStructure(ObjectNode item, ObjectMapper mapper) {
         // If item already has a proper request structure, return it
-        if (item.has("request") && item.getJSONObject("request").has("url")) {
+        if (item.has("request") && item.get("request").has("url")) {
             return item;
         }
 
         // Otherwise, attempt to build a proper structure
-        JSONObject normalized = new JSONObject(item.toString()); // Clone to avoid modifying original
+        ObjectNode normalized = item.deepCopy();
 
         // If the item has a URL directly
         if (item.has("url")) {
-            JSONObject request = new JSONObject();
-            request.put("url", item.getString("url"));
+            ObjectNode request = mapper.createObjectNode();
+            request.put("url", item.get("url").asText());
 
             // If the item has data, move it into the request
             if (item.has("data")) {
-                request.put("data", item.get("data"));
+                request.set("data", item.get("data"));
             } else {
                 // Create an empty data object
-                request.put("data", new JSONObject());
+                request.set("data", mapper.createObjectNode());
             }
 
-            normalized.put("request", request);
+            normalized.set("request", request);
         }
 
         return normalized;
@@ -105,24 +108,25 @@ public class MessageValidator {
      * Validates a message from the update-status queue
      * 
      * @param messageBody The raw message body string
-     * @return A validated JSONObject
-     * @throws JSONException If the message cannot be parsed as JSON
+     * @param mapper The ObjectMapper instance to use
+     * @return A validated ObjectNode
+     * @throws JsonProcessingException If the message cannot be parsed as JSON
      */
-    public static JSONObject validateUpdateStatusMessage(String messageBody) throws JSONException {
+    public static ObjectNode validateUpdateStatusMessage(String messageBody, ObjectMapper mapper) throws JsonProcessingException {
         if (messageBody == null || messageBody.trim().isEmpty()) {
-            throw new JSONException("Empty message body");
+            throw new IllegalArgumentException("Empty message body");
         }
 
         try {
-            JSONObject message = new JSONObject(messageBody);
+            ObjectNode message = (ObjectNode) mapper.readTree(messageBody);
 
             // Validate required fields
             if (!message.has("messenger_bot_broadcast_serial")) {
-                throw new JSONException("Missing required field: messenger_bot_broadcast_serial");
+                throw new IllegalArgumentException("Missing required field: messenger_bot_broadcast_serial");
             }
 
             return message;
-        } catch (JSONException e) {
+        } catch (JsonProcessingException e) {
             LoggerUtil.error("Invalid update status message: " +
                     messageBody.substring(0, Math.min(100, messageBody.length())) + "...");
             throw e;

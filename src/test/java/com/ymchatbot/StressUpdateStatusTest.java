@@ -1,8 +1,8 @@
 package com.ymchatbot;
 
 import com.rabbitmq.client.*;
-import org.json.JSONObject;
-import org.json.JSONException;
+import com.fasterxml.jackson.databind.ObjectMapper;
+import com.fasterxml.jackson.databind.node.ObjectNode;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.extension.ExtendWith;
@@ -33,6 +33,7 @@ import static org.junit.jupiter.api.Assertions.*;
 @ComponentScan(basePackages = { "com.ymchatbot" })
 public class StressUpdateStatusTest {
     private static final Random RANDOM = new Random(1337);
+    private final ObjectMapper objectMapper = new ObjectMapper();
 
     @Value("${spring.rabbitmq.host}")
     private String amqpHost;
@@ -289,30 +290,30 @@ public class StressUpdateStatusTest {
 
             LoggerUtil.info("📤 Starting message publication...");
             for (int i = 1; i <= TOTAL_MESSAGES; i++) {
-                JSONObject message = new JSONObject();
+                ObjectNode message = objectMapper.createObjectNode();
                 message.put("messenger_bot_broadcast_serial", campaignId);
                 message.put("messenger_bot_broadcast_serial_send", i);
                 message.put("messenger_bot_subscriber", SUBSCRIBER_ID_START + i);
                 message.put("sent_time", getNow());
 
-                JSONObject response = new JSONObject();
+                ObjectNode response = objectMapper.createObjectNode();
                 boolean isDnsFailure = i % 20 == 0;
                 if (isDnsFailure) {
-                    JSONObject error = new JSONObject();
+                    ObjectNode error = objectMapper.createObjectNode();
                     error.put("message", "DNS resolution failed");
                     error.put("code", 504);
-                    response.put("error", error);
+                    response.set("error", error);
                 } else if (RANDOM.nextDouble() < 0.333) {
-                    JSONObject error = new JSONObject();
+                    ObjectNode error = objectMapper.createObjectNode();
                     error.put("message", "User unavailable");
                     error.put("code", 551);
-                    response.put("error", error);
+                    response.set("error", error);
                     publishedErrorMessages++;
                 } else {
                     response.put("message_id", "msg-id-" + i);
                     publishedSuccessMessages++;
                 }
-                message.put("response", response);
+                message.set("response", response);
                 message.put("retry_count", 0);
 
                 boolean sent = false;

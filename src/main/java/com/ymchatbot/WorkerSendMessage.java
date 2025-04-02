@@ -18,9 +18,10 @@ import java.util.*;
 import java.util.concurrent.*;
 import java.util.concurrent.atomic.AtomicLong;
 
-import org.json.JSONArray;
-import org.json.JSONException;
-import org.json.JSONObject;
+import com.fasterxml.jackson.databind.ObjectMapper;
+import com.fasterxml.jackson.databind.node.ObjectNode;
+import com.fasterxml.jackson.databind.node.ArrayNode;
+import com.fasterxml.jackson.core.JsonProcessingException;
 
 import org.apache.http.HttpEntity;
 import org.apache.http.client.config.RequestConfig;
@@ -222,13 +223,13 @@ public class WorkerSendMessage {
             List<Integer> campaignIds = fetchScheduledCampaigns(10); // Adjust limit as needed
             for (Integer campaignId : campaignIds) {
                 markCampaignAsSending(campaignId);
-                markCampaignLoggersAsSending(campaignId); // Add this line
+                markCampaignLoggersAsSending(campaignId);
 
                 // Update logger status to 5 (sending)
                 updateLoggerStatus(campaignId);
 
-                JSONArray messages = fetchMessagesForCampaign(campaignId);
-                if (messages.length() > 0) {
+                ArrayNode messages = fetchMessagesForCampaign(campaignId);
+                if (messages.size() > 0) {
                     // Check if channel is closed before publishing
                     if (channel == null || !channel.isOpen()) {
                         LoggerUtil.warn("RabbitMQ channel closed, attempting to reopen...");
@@ -247,7 +248,7 @@ public class WorkerSendMessage {
                     String payload = messages.toString();
                     channel.basicPublish("", queueName, MessageProperties.PERSISTENT_TEXT_PLAIN,
                             payload.getBytes(StandardCharsets.UTF_8));
-                    LoggerUtil.info("Queued campaign " + campaignId + " with " + messages.length() + " messages");
+                    LoggerUtil.info("Queued campaign " + campaignId + " with " + messages.size() + " messages");
                 }
             }
         } catch (Exception e) {
@@ -255,7 +256,9 @@ public class WorkerSendMessage {
         }
     }
 
-    private JSONArray fetchMessagesForCampaign(int campaignId) throws SQLException {
+    private ObjectMapper objectMapper = new ObjectMapper();
+
+    private ArrayNode fetchMessagesForCampaign(int campaignId) throws SQLException {
         String query = """
                     SELECT
                         s.id AS messenger_bot_broadcast_serial_send,
@@ -272,7 +275,7 @@ public class WorkerSendMessage {
                     LIMIT 100
                 """;
 
-        JSONArray result = new JSONArray();
+        ArrayNode result = objectMapper.createArrayNode();
 
         try (PreparedStatement stmt = dbConnection.prepareStatement(query)) {
             stmt.setInt(1, campaignId);
@@ -294,32 +297,29 @@ public class WorkerSendMessage {
                                     Optional.ofNullable(rs.getString("subscribe_id")).orElse(""));
 
                     // Validate JSON format
-                    JSONObject messageJson;
+                    ObjectNode messageJson;
                     try {
-                        messageJson = new JSONObject(message.trim());
-                    } catch (JSONException e) {
+                        messageJson = (ObjectNode) objectMapper.readTree(message.trim());
+                    } catch (JsonProcessingException e) {
                         LoggerUtil.warn("Skipping malformed message for campaign " + campaignId + ": " + message);
                         LoggerUtil.warn("Reason: " + e.getMessage());
                         continue; // Skip malformed message
                     }
 
-                    JSONObject item = new JSONObject();
-                    item.put("data", new JSONObject() {
-                        {
-                            put("messenger_bot_broadcast_serial", campaignId);
-                            put("messenger_bot_broadcast_serial_send",
-                                    rs.getInt("messenger_bot_broadcast_serial_send"));
-                            put("messenger_bot_subscriber", rs.getInt("messenger_bot_subscriber"));
-                        }
-                    });
+                    ObjectNode item = objectMapper.createObjectNode();
+                    ObjectNode data = objectMapper.createObjectNode();
+                    data.put("messenger_bot_broadcast_serial", campaignId);
+                    data.put("messenger_bot_broadcast_serial_send", rs.getInt("messenger_bot_broadcast_serial_send"));
+                    data.put("messenger_bot_subscriber", rs.getInt("messenger_bot_subscriber"));
+                    item.set("data", data);
 
-                    JSONObject request = new JSONObject();
+                    ObjectNode request = objectMapper.createObjectNode();
                     request.put("url",
                             "https://graph.facebook.com/v22.0/me/messages?access_token=" + rs.getString("token"));
-                    request.put("data", messageJson);
+                    request.set("data", messageJson);
 
-                    item.put("request", request);
-                    result.put(item);
+                    item.set("request", request);
+                    result.add(item);
                 }
             }
         }
@@ -430,10 +430,10 @@ public class WorkerSendMessage {
         String messageBody = new String(delivery.getBody(), StandardCharsets.UTF_8);
 
         // Use the validator to standardize the message format
-        JSONArray data;
+        ArrayNode data;
         try {
-            data = MessageValidator.validateAndStandardize(messageBody);
-        } catch (JSONException e) {
+            data = MessageValidator.validateAndStandardize(messageBody, objectMapper);
+        } catch (JsonProcessingException e) {
             LoggerUtil.error("Failed to parse message as JSON. Message body: " +
                     messageBody.substring(0, Math.min(messageBody.length(), 100)) + "...", e);
             // Don't requeue malformed messages to avoid infinite loops
@@ -443,7 +443,7 @@ public class WorkerSendMessage {
         }
 
         // Empty array check
-        if (data.length() == 0) {
+        if (data.size() == 0) {
             channel.basicAck(delivery.getEnvelope().getDeliveryTag(), false);
             LoggerUtil.debug("Empty message array, acknowledged without processing");
             return;
@@ -452,9 +452,9 @@ public class WorkerSendMessage {
         // Check if campaign is active
         int campaignId;
         try {
-            JSONObject firstItem = data.getJSONObject(0);
+            ObjectNode firstItem = (ObjectNode) data.get(0);
             campaignId = MessageValidator.extractCampaignId(firstItem);
-        } catch (JSONException e) {
+        } catch (Exception e) {
             LoggerUtil.error("Failed to extract campaign ID from message", e);
             channel.basicReject(delivery.getEnvelope().getDeliveryTag(), false);
             errorCounter.incrementAndGet();
@@ -471,7 +471,6 @@ public class WorkerSendMessage {
                 LoggerUtil.debug("Skipped " + inactiveCampaignCounter.get() + " inactive campaigns so far.");
                 lastInactiveLogTime = now;
             }
-
             return;
         }
 
@@ -479,21 +478,21 @@ public class WorkerSendMessage {
 
         // Process messages
         long startTime = System.nanoTime();
-        Map<Integer, CompletableFuture<JSONObject>> futures = new HashMap<>();
+        Map<Integer, CompletableFuture<ObjectNode>> futures = new HashMap<>();
 
         // Process each message item
-        for (int i = 0; i < data.length(); i++) {
+        for (int i = 0; i < data.size(); i++) {
             try {
-                JSONObject item = data.getJSONObject(i);
+                ObjectNode item = (ObjectNode) data.get(i);
                 // Normalize the request structure
-                item = MessageValidator.normalizeRequestStructure(item);
+                item = MessageValidator.normalizeRequestStructure(item, objectMapper);
 
-                JSONObject requestObj = item.getJSONObject("request");
-                String url = requestObj.getString("url").replace("\\/", "/");
-                String requestBody = requestObj.getJSONObject("data").toString();
+                ObjectNode requestObj = (ObjectNode) item.get("request");
+                String url = requestObj.get("url").asText().replace("\\/", "/");
+                String requestBody = requestObj.get("data").toString();
 
                 futures.put(i, sendHttpRequestAsync(url, requestBody));
-            } catch (JSONException e) {
+            } catch (Exception e) {
                 LoggerUtil.warn("Skipping malformed message at index " + i + ": " + e.getMessage());
                 // Continue processing other messages
             }
@@ -505,8 +504,8 @@ public class WorkerSendMessage {
         allRequests.get();
 
         // Process responses
-        Map<Integer, JSONObject> responses = new HashMap<>();
-        for (Map.Entry<Integer, CompletableFuture<JSONObject>> entry : futures.entrySet()) {
+        Map<Integer, ObjectNode> responses = new HashMap<>();
+        for (Map.Entry<Integer, CompletableFuture<ObjectNode>> entry : futures.entrySet()) {
             try {
                 responses.put(entry.getKey(), entry.getValue().get());
             } catch (Exception e) {
@@ -516,18 +515,18 @@ public class WorkerSendMessage {
         }
 
         // Send status updates
-        for (int i = 0; i < data.length(); i++) {
+        for (int i = 0; i < data.size(); i++) {
             if (!responses.containsKey(i)) {
                 continue; // Skip if this index was malformed and not processed
             }
 
             try {
-                JSONObject item = data.getJSONObject(i);
-                JSONObject response = responses.get(i);
-                JSONObject updateStatusMessage = new JSONObject();
+                ObjectNode item = (ObjectNode) data.get(i);
+                ObjectNode response = responses.get(i);
+                ObjectNode updateStatusMessage = objectMapper.createObjectNode();
 
                 // Extract data for status update
-                JSONObject dataObj = item.has("data") ? item.getJSONObject("data") : item;
+                ObjectNode dataObj = item.has("data") ? (ObjectNode) item.get("data") : item;
 
                 updateStatusMessage.put("messenger_bot_broadcast_serial",
                         MessageValidator.extractCampaignId(item));
@@ -535,20 +534,20 @@ public class WorkerSendMessage {
                 // Extract other required fields or use defaults
                 try {
                     updateStatusMessage.put("messenger_bot_broadcast_serial_send",
-                            dataObj.getInt("messenger_bot_broadcast_serial_send"));
-                } catch (JSONException e) {
+                            dataObj.get("messenger_bot_broadcast_serial_send").asInt());
+                } catch (Exception e) {
                     updateStatusMessage.put("messenger_bot_broadcast_serial_send", 0);
                 }
 
                 try {
                     updateStatusMessage.put("messenger_bot_subscriber",
-                            dataObj.getInt("messenger_bot_subscriber"));
-                } catch (JSONException e) {
+                            dataObj.get("messenger_bot_subscriber").asInt());
+                } catch (Exception e) {
                     updateStatusMessage.put("messenger_bot_subscriber", 0);
                 }
 
                 updateStatusMessage.put("sent_time", getCurrentTimestamp());
-                updateStatusMessage.put("response", response);
+                updateStatusMessage.set("response", response);
 
                 sendUpdateStatusMessage(updateStatusMessage);
             } catch (Exception e) {
@@ -572,15 +571,15 @@ public class WorkerSendMessage {
 
         if (LoggerUtil.isDebugEnabled()) {
             long duration = (System.nanoTime() - startTime) / 1_000_000;
-            LoggerUtil.debug("Completed processing " + data.length() + " messages in " + duration + "ms");
+            LoggerUtil.debug("Completed processing " + data.size() + " messages in " + duration + "ms");
         }
 
         // Log stats periodically
         logPeriodicStats();
     }
 
-    private CompletableFuture<JSONObject> sendHttpRequestAsync(String url, String requestBody) {
-        CompletableFuture<JSONObject> future = new CompletableFuture<>();
+    private CompletableFuture<ObjectNode> sendHttpRequestAsync(String url, String requestBody) {
+        CompletableFuture<ObjectNode> future = new CompletableFuture<>();
         try {
             HttpPost httpPost = new HttpPost(url);
             httpPost.setHeader("Content-Type", "application/json");
@@ -590,7 +589,7 @@ public class WorkerSendMessage {
                     try {
                         HttpEntity entity = result.getEntity();
                         String responseBody = EntityUtils.toString(entity);
-                        future.complete(new JSONObject(responseBody));
+                        future.complete((ObjectNode) objectMapper.readTree(responseBody));
                     } catch (Exception e) {
                         future.complete(createErrorResponse(e.getMessage()));
                         LoggerUtil.error("Error processing HTTP response", e);
@@ -614,35 +613,36 @@ public class WorkerSendMessage {
         return future;
     }
 
-    private JSONObject createErrorResponse(String message) {
-        JSONObject error = new JSONObject();
-        error.put("message", message);
-        error.put("code", 0);
-        JSONObject response = new JSONObject();
-        response.put("error", error);
+    private ObjectNode createErrorResponse(String errorMessage) {
+        ObjectNode response = objectMapper.createObjectNode();
+        response.put("error", true);
+        response.put("message", errorMessage);
         return response;
     }
 
-    private void sendUpdateStatusMessage(JSONObject message) throws IOException {
+
+    private void sendUpdateStatusMessage(ObjectNode message) throws IOException {
         updateStatusChannel.basicPublish("", updateStatusQueueName, MessageProperties.PERSISTENT_TEXT_PLAIN,
                 message.toString().getBytes(StandardCharsets.UTF_8));
 
         if (LoggerUtil.isDebugEnabled()) {
             LoggerUtil.debug("Sent update status message for broadcast serial: " +
-                    message.getInt("messenger_bot_broadcast_serial"));
+                    message.get("messenger_bot_broadcast_serial").asInt());
         }
     }
 
     private boolean isCampaignActive(int campaignId) throws SQLException {
-        try (PreparedStatement stmt = dbConnection
-                .prepareStatement("SELECT posting_status FROM messenger_bot_broadcast_serial WHERE id = ?")) {
+        String query = "SELECT posting_status FROM messenger_bot_broadcast_serial WHERE id = ?";
+        try (PreparedStatement stmt = dbConnection.prepareStatement(query)) {
             stmt.setInt(1, campaignId);
-            ResultSet rs = stmt.executeQuery();
-            if (rs.next()) {
-                return rs.getInt("posting_status") != 4;
+            try (ResultSet rs = stmt.executeQuery()) {
+                if (rs.next()) {
+                    int status = rs.getInt("posting_status");
+                    return status != 4; // 3 indicates campaign is inactive/completed
+                }
+                return false; // Campaign not found
             }
         }
-        return false;
     }
 
     // Log statistics at intervals
@@ -669,7 +669,7 @@ public class WorkerSendMessage {
         }
 
         // Don't requeue permanent errors like JSON parsing issues
-        if (e instanceof org.json.JSONException) {
+        if (e instanceof com.fasterxml.jackson.core.JsonProcessingException) {
             return false;
         }
 

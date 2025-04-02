@@ -10,8 +10,9 @@ import java.nio.charset.StandardCharsets;
 import java.sql.*;
 import java.util.concurrent.atomic.AtomicLong;
 
-import org.json.JSONException;
-import org.json.JSONObject;
+import com.fasterxml.jackson.databind.JsonNode;
+import com.fasterxml.jackson.databind.ObjectMapper;
+import com.fasterxml.jackson.core.JsonProcessingException;
 
 @Component
 public class WorkerUpdateStatus {
@@ -59,6 +60,8 @@ public class WorkerUpdateStatus {
     private static AtomicLong errorCount = new AtomicLong(0);
     private static long lastStatsLogTime = 0;
     private static final long STATS_LOG_INTERVAL_MS = 10000; // Reduzido para 10 segundos
+
+    private final ObjectMapper objectMapper = new ObjectMapper();
 
     @PostConstruct
     public void initFromSpring() throws Exception {
@@ -251,11 +254,11 @@ public class WorkerUpdateStatus {
         LoggerUtil.debug("📄 Full message content: " + messageBody);
         LoggerUtil.info("📩 Processing message #" + count);
 
-        JSONObject message;
+        JsonNode message;
         try {
-            message = new JSONObject(messageBody);
+            message = objectMapper.readTree(messageBody);
             LoggerUtil.debug("✅ Message parsed as JSON successfully");
-        } catch (JSONException e) {
+        } catch (JsonProcessingException e) {
             LoggerUtil.error("❌ Failed to parse message as JSON: " + e.getMessage(), e);
             // Não confirmar mensagens mal formatadas
             errorCount.incrementAndGet();
@@ -274,21 +277,21 @@ public class WorkerUpdateStatus {
             return false; // Retorna falso para indicar que o processamento falhou
         }
 
-        int campaignId = message.getInt("messenger_bot_broadcast_serial");
-        int messageId = message.getInt("messenger_bot_broadcast_serial_send");
-        JSONObject response = message.getJSONObject("response");
+        int campaignId = message.get("messenger_bot_broadcast_serial").asInt();
+        int messageId = message.get("messenger_bot_broadcast_serial_send").asInt();
+        JsonNode response = message.get("response");
 
         LoggerUtil.info("🔄 Processing message for campaign=" + campaignId + ", message_id=" + messageId);
 
         boolean success = false;
         try {
             if (response.has("error")) {
-                JSONObject error = response.getJSONObject("error");
+                JsonNode error = response.get("error");
                 LoggerUtil.info("🔄 Message has error: " + error.toString());
                 success = updateMessageWithError(campaignId, messageId, error);
                 errorCount.incrementAndGet();
             } else {
-                String externalMsgId = response.optString("message_id", "");
+                String externalMsgId = response.path("message_id").asText("");
                 LoggerUtil.info("🔄 Message is success with external_id: " + externalMsgId);
                 success = updateMessageWithSuccess(campaignId, messageId, externalMsgId);
                 successCount.incrementAndGet();
@@ -364,7 +367,7 @@ public class WorkerUpdateStatus {
         }
     }
 
-    private boolean updateMessageWithError(int campaignId, int messageId, JSONObject error) throws SQLException {
+    private boolean updateMessageWithError(int campaignId, int messageId, JsonNode error) throws SQLException {
         LoggerUtil.info("🔄 Updating message as error - campaignId: " + campaignId + ", messageId: " + messageId);
 
         if (!ensureDbConnection()) {
@@ -378,8 +381,8 @@ public class WorkerUpdateStatus {
             dbConnection.setAutoCommit(false);
             LoggerUtil.debug("🔄 Set autoCommit=false for transaction");
 
-            String errorMessage = error.optString("message", "Unknown error");
-            int errorCode = error.optInt("code", 0);
+            String errorMessage = error.path("message").asText("Unknown error");
+            int errorCode = error.path("code").asInt(0);
 
             String errorText = "Code: " + errorCode + ", Message: " + errorMessage;
             LoggerUtil.info("🔍 Error details: " + errorText);
@@ -527,8 +530,8 @@ public class WorkerUpdateStatus {
         }
 
         // Não requeue para erros de formato de mensagem
-        if (e instanceof JSONException) {
-            LoggerUtil.debug("JSONException will not be requeued: " + e.getMessage());
+        if (e instanceof JsonProcessingException) {
+            LoggerUtil.debug("JsonProcessingException will not be requeued: " + e.getMessage());
             return false;
         }
 
