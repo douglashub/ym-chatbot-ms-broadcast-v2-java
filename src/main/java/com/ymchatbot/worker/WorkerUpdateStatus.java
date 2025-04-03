@@ -1,6 +1,6 @@
-package com.ymchatbot;
+package com.ymchatbot.worker;
 
-import org.springframework.beans.factory.annotation.Value;
+import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.stereotype.Component;
 import jakarta.annotation.PostConstruct;
 import com.rabbitmq.client.*;
@@ -13,43 +13,28 @@ import java.util.concurrent.atomic.AtomicLong;
 import com.fasterxml.jackson.databind.JsonNode;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import com.fasterxml.jackson.core.JsonProcessingException;
+import com.ymchatbot.config.DatabaseConfig;
+import com.ymchatbot.config.RabbitMQConfig;
+import com.ymchatbot.config.WorkerConfig;
+import com.ymchatbot.util.LoggerUtil;
 
 @Component
 public class WorkerUpdateStatus {
     private final String queueName = "broadcast-v2/update-status";
     private static final int MAX_DB_RECONNECT_ATTEMPTS = 3;
 
-    // Add flag to track initialization and started state
+    @Autowired
+    private DatabaseConfig databaseConfig;
+
+    @Autowired
+    private RabbitMQConfig rabbitMQConfig;
+
+    @Autowired
+    private WorkerConfig workerConfig;
+
+    // State tracking
     private volatile boolean initialized = false;
     private volatile boolean started = false;
-
-    @Value("${spring.datasource.url}")
-    private String dbUrl;
-
-    @Value("${spring.datasource.username}")
-    private String dbUsername;
-
-    @Value("${spring.datasource.password}")
-    private String dbPassword;
-
-    @Value("${spring.rabbitmq.host}")
-    private String amqpHost;
-
-    @Value("${spring.rabbitmq.port}")
-    private int amqpPort;
-
-    @Value("${spring.rabbitmq.username}")
-    private String amqpUsername;
-
-    @Value("${spring.rabbitmq.password}")
-    private String amqpPassword;
-
-    @Value("${spring.rabbitmq.virtual-host:/}")
-    private String amqpVhost;
-
-    // Reduzir o número de consumidores para o teste
-    @Value("${application.worker.update-status.concurrent-consumers:1}")
-    private int concurrentConsumers;
 
     private java.sql.Connection dbConnection;
     private Channel channel;
@@ -59,16 +44,18 @@ public class WorkerUpdateStatus {
     private static AtomicLong successCount = new AtomicLong(0);
     private static AtomicLong errorCount = new AtomicLong(0);
     private static long lastStatsLogTime = 0;
-    private static final long STATS_LOG_INTERVAL_MS = 10000; // Reduzido para 10 segundos
+    private static final long STATS_LOG_INTERVAL_MS = 10000;
 
     private final ObjectMapper objectMapper = new ObjectMapper();
 
     @PostConstruct
     public void initFromSpring() throws Exception {
-        if (!initialized)
+        if (!initialized) {
             initialize();
-        if (!started)
+        }
+        if (!started) {
             start();
+        }
     }
 
     public synchronized void initialize() throws Exception {
@@ -80,28 +67,8 @@ public class WorkerUpdateStatus {
         LoggerUtil.info("⏳ Initializing WorkerUpdateStatus...");
 
         try {
-            // Initialize database connection
             initDbConnection();
-
-            // Initialize RabbitMQ connection
-            ConnectionFactory factory = new ConnectionFactory();
-            factory.setHost(amqpHost);
-            factory.setPort(amqpPort);
-            factory.setUsername(amqpUsername);
-            factory.setPassword(amqpPassword);
-            factory.setVirtualHost(amqpVhost);
-
-            // Aumentar tempo de conexão
-            factory.setConnectionTimeout(10000);
-            factory.setRequestedHeartbeat(30); // heartbeat em segundos
-
-            connection = factory.newConnection("worker-update-status");
-            channel = connection.createChannel();
-
-            // Declare queue with durable flag
-            boolean durable = true;
-            channel.queueDeclare(queueName, durable, false, false, null);
-
+            initializeRabbitMQ();
             initialized = true;
             LoggerUtil.info("✅ WorkerUpdateStatus initialized successfully");
         } catch (Exception e) {
@@ -123,59 +90,38 @@ public class WorkerUpdateStatus {
 
         LoggerUtil.info("🚀 Starting WorkerUpdateStatus...");
 
-        // Set up consumer with enhanced logging
         DeliverCallback deliverCallback = (consumerTag, delivery) -> {
             try {
                 String messageBody = new String(delivery.getBody(), StandardCharsets.UTF_8);
                 LoggerUtil.info("📩 Received message from update-status queue: " +
                         messageBody.substring(0, Math.min(100, messageBody.length())) + "...");
 
-                // Processar a mensagem
                 boolean processed = processMessage(delivery);
 
                 try {
-                    // Verificar canal antes de confirmar ou rejeitar
                     if (channel == null || !channel.isOpen()) {
                         LoggerUtil.warn("⚠️ Channel closed before acknowledging message, reconnecting...");
                         reconnectChannel();
                     }
 
                     if (processed) {
-                        LoggerUtil.info("✅ Message processed successfully, acknowledging");
                         channel.basicAck(delivery.getEnvelope().getDeliveryTag(), false);
                     } else {
-                        LoggerUtil.info("⚠️ Message processing incomplete, rejecting with requeue");
                         channel.basicReject(delivery.getEnvelope().getDeliveryTag(), true);
                     }
                 } catch (IOException ioe) {
                     LoggerUtil.error("❌ Failed to acknowledge/reject message after processing", ioe);
-                    // Se falhar ao confirmar, tentar reconectar para a próxima mensagem
                     reconnectChannel();
                 }
             } catch (Exception e) {
-                LoggerUtil.error("❌ Error processing message from update-status queue: " + e.getMessage(), e);
-                try {
-                    // Verificar e reconectar o canal se necessário
-                    if (e instanceof IOException || channel == null || !channel.isOpen()) {
-                        LoggerUtil.warn("⚠️ Possible connection issue, attempting to reconnect channel...");
-                        reconnectChannel();
-                    }
-
-                    boolean requeue = shouldRequeueError(e);
-                    LoggerUtil.info("Message will be " + (requeue ? "requeued" : "discarded"));
-                    channel.basicReject(delivery.getEnvelope().getDeliveryTag(), requeue);
-                } catch (Exception ex) {
-                    LoggerUtil.error("❌ Failed to reject message after error: " + ex.getMessage(), ex);
-                    // Não podemos fazer muito mais aqui além de logar e seguir em frente
-                }
+                LoggerUtil.error("❌ Error processing message: " + e.getMessage(), e);
+                handleMessageError(delivery, e);
             }
         };
 
-        // Reduzir prefetch para processar menos mensagens simultaneamente
         channel.basicQos(5);
 
-        // Start consuming with multiple consumers
-        for (int i = 0; i < concurrentConsumers; i++) {
+        for (int i = 0; i < workerConfig.getUpdateStatusConcurrentConsumers(); i++) {
             String consumerTag = channel.basicConsume(queueName, false, deliverCallback, tag -> {
                 LoggerUtil.info("Consumer cancelled: " + tag);
             });
@@ -183,127 +129,171 @@ public class WorkerUpdateStatus {
         }
 
         started = true;
-        LoggerUtil.info("🚀 Update Status worker started with " + concurrentConsumers + " consumers");
+        LoggerUtil.info("🚀 Update Status worker started with " + workerConfig.getUpdateStatusConcurrentConsumers()
+                + " consumers");
     }
 
-    public boolean isStarted() {
-        return started;
-    }
-
-    public boolean isInitialized() {
-        return initialized;
-    }
-
-    private void initDbConnection() throws SQLException {
+    private void handleMessageError(Delivery delivery, Exception e) {
         try {
-            LoggerUtil.info("Connecting to database: " + dbUrl);
-            dbConnection = DriverManager.getConnection(dbUrl, dbUsername, dbPassword);
-            // Testar a conexão
-            try (Statement stmt = dbConnection.createStatement()) {
-                ResultSet rs = stmt.executeQuery("SELECT 1");
-                if (rs.next()) {
-                    LoggerUtil.info("✅ Database connection test successful");
-                }
+            if (e instanceof IOException || channel == null || !channel.isOpen()) {
+                reconnectChannel();
             }
-            LoggerUtil.info("✅ Database connection established to " + dbUrl);
-        } catch (SQLException e) {
-            LoggerUtil.error("❌ Failed to connect to database: " + e.getMessage(), e);
-            throw e;
+            boolean requeue = shouldRequeueError(e);
+            channel.basicReject(delivery.getEnvelope().getDeliveryTag(), requeue);
+        } catch (Exception ex) {
+            LoggerUtil.error("❌ Failed to reject message after error", ex);
         }
     }
 
-    private boolean ensureDbConnection() {
-        for (int attempt = 1; attempt <= MAX_DB_RECONNECT_ATTEMPTS; attempt++) {
-            try {
-                if (dbConnection == null || dbConnection.isClosed()) {
-                    LoggerUtil.info("🔄 Reconnecting to database (attempt " + attempt + ")");
-                    initDbConnection();
-                }
+    private void reconnectChannel() {
+        try {
+            LoggerUtil.info("🔄 Attempting to reconnect RabbitMQ channel...");
+            if (connection == null || !connection.isOpen()) {
+                connection = rabbitMQConfig.rabbitConnectionFactory().newConnection("worker-update-status");
+            }
 
-                // Testar a conexão com uma consulta simples
-                try (Statement stmt = dbConnection.createStatement()) {
-                    stmt.executeQuery("SELECT 1");
-                    return true;
-                }
+            if (channel == null || !channel.isOpen()) {
+                channel = connection.createChannel();
+                channel.queueDeclare(queueName, true, false, false, null);
+            }
+        } catch (Exception e) {
+            LoggerUtil.error("❌ Failed to reconnect RabbitMQ channel", e);
+        }
+    }
+
+    private void logPeriodicStats() {
+        long now = System.currentTimeMillis();
+        if (now - lastStatsLogTime > STATS_LOG_INTERVAL_MS) {
+            LoggerUtil.info(String.format(
+                    "📊 Status Update Worker [%s]: Processed: %d, Success: %d, Errors: %d",
+                    Thread.currentThread().getName(),
+                    processedCount.get(), successCount.get(), errorCount.get()));
+            lastStatsLogTime = now;
+        }
+    }
+
+    private boolean shouldRequeueError(Exception e) {
+        // Requeue for transient errors como conexão e timeout
+        if (e instanceof SQLException) {
+            String message = e.getMessage().toLowerCase();
+            // Requeue para erros de conexão, mas não para outros erros SQL
+            boolean shouldRequeue = message.contains("connection") ||
+                    message.contains("timeout") ||
+                    message.contains("deadlock");
+            LoggerUtil.debug("SQL error will " + (shouldRequeue ? "" : "not ") + "be requeued: " + e.getMessage());
+            return shouldRequeue;
+        }
+
+        if (e instanceof IOException) {
+            LoggerUtil.debug("IOException will be requeued: " + e.getMessage());
+            return true;
+        }
+
+        // Não requeue para erros de formato de mensagem
+        if (e instanceof JsonProcessingException) {
+            LoggerUtil.debug("JsonProcessingException will not be requeued: " + e.getMessage());
+            return false;
+        }
+
+        // Por padrão, requeue erros desconhecidos
+        LoggerUtil.debug("Unknown error type will be requeued: " + e.getClass().getName());
+        return true;
+    }
+
+    private void initDbConnection() throws SQLException {
+        int attempts = 0;
+        SQLException lastException = null;
+
+        while (attempts < MAX_DB_RECONNECT_ATTEMPTS) {
+            try {
+                LoggerUtil.info(
+                        "Connecting to database (attempt " + (attempts + 1) + "/" + MAX_DB_RECONNECT_ATTEMPTS + ")...");
+                dbConnection = databaseConfig.dataSource().getConnection();
+                LoggerUtil.info("✅ Database connection established");
+                return;
             } catch (SQLException e) {
-                LoggerUtil.error("❌ Failed to ensure database connection on attempt " + attempt + ": " + e.getMessage(),
+                lastException = e;
+                attempts++;
+                LoggerUtil.error(
+                        "❌ Failed to connect to database (attempt " + attempts + "/" + MAX_DB_RECONNECT_ATTEMPTS + ")",
                         e);
-                if (attempt < MAX_DB_RECONNECT_ATTEMPTS) {
+
+                if (attempts < MAX_DB_RECONNECT_ATTEMPTS) {
                     try {
-                        int sleepTime = 1000 * attempt; // Backoff exponencial
-                        LoggerUtil.info("Waiting " + sleepTime + "ms before retry...");
-                        Thread.sleep(sleepTime);
+                        Thread.sleep(1000 * attempts); // Exponential backoff
                     } catch (InterruptedException ie) {
                         Thread.currentThread().interrupt();
-                        LoggerUtil.warn("Thread interrupted while waiting to retry database connection");
+                        throw new SQLException("Database connection interrupted", ie);
                     }
                 }
             }
         }
-        LoggerUtil.error("❌ Failed to establish database connection after " + MAX_DB_RECONNECT_ATTEMPTS + " attempts");
-        return false;
+
+        LoggerUtil.error("❌ Failed to connect to database after " + MAX_DB_RECONNECT_ATTEMPTS + " attempts");
+        throw lastException;
     }
 
-    // Método principal de processamento - agora retorna boolean para indicar
-    // sucesso/falha
+    private void initializeRabbitMQ() throws Exception {
+        ConnectionFactory factory = rabbitMQConfig.rabbitConnectionFactory();
+        connection = factory.newConnection("worker-update-status");
+        channel = connection.createChannel();
+
+        // Declare queue with durable flag
+        boolean durable = true;
+        channel.queueDeclare(queueName, durable, false, false, null);
+        channel.basicQos(workerConfig.getUpdateStatusConcurrentConsumers());
+    }
+
     private boolean processMessage(Delivery delivery) throws Exception {
         long count = processedCount.incrementAndGet();
         String messageBody = new String(delivery.getBody(), StandardCharsets.UTF_8);
 
-        // Log completo para debug
         LoggerUtil.debug("📄 Full message content: " + messageBody);
         LoggerUtil.info("📩 Processing message #" + count);
 
-        JsonNode message;
         try {
-            message = objectMapper.readTree(messageBody);
-            LoggerUtil.debug("✅ Message parsed as JSON successfully");
-        } catch (JsonProcessingException e) {
-            LoggerUtil.error("❌ Failed to parse message as JSON: " + e.getMessage(), e);
-            // Não confirmar mensagens mal formatadas
-            errorCount.incrementAndGet();
-            return false; // Retorna falso para indicar que o processamento falhou
-        }
+            JsonNode message = objectMapper.readTree(messageBody);
 
-        // Validação dos campos obrigatórios
-        if (!message.has("messenger_bot_broadcast_serial") ||
-                !message.has("messenger_bot_broadcast_serial_send") ||
-                !message.has("response")) {
-            LoggerUtil.error("❌ Missing required fields in message: " +
-                    "has campaign_id=" + message.has("messenger_bot_broadcast_serial") +
-                    ", has message_id=" + message.has("messenger_bot_broadcast_serial_send") +
-                    ", has response=" + message.has("response"));
-            errorCount.incrementAndGet();
-            return false; // Retorna falso para indicar que o processamento falhou
-        }
+            // Extract campaign and message IDs
+            int campaignId = message.path("messenger_bot_broadcast_serial").asInt();
+            int messageId = message.path("messenger_bot_broadcast_serial_send").asInt();
 
-        int campaignId = message.get("messenger_bot_broadcast_serial").asInt();
-        int messageId = message.get("messenger_bot_broadcast_serial_send").asInt();
-        JsonNode response = message.get("response");
-
-        LoggerUtil.info("🔄 Processing message for campaign=" + campaignId + ", message_id=" + messageId);
-
-        boolean success = false;
-        try {
-            if (response.has("error")) {
-                JsonNode error = response.get("error");
-                LoggerUtil.info("🔄 Message has error: " + error.toString());
-                success = updateMessageWithError(campaignId, messageId, error);
+            if (campaignId == 0 || messageId == 0) {
+                LoggerUtil.error("❌ Invalid message format: missing required fields");
                 errorCount.incrementAndGet();
-            } else {
-                String externalMsgId = response.path("message_id").asText("");
-                LoggerUtil.info("🔄 Message is success with external_id: " + externalMsgId);
-                success = updateMessageWithSuccess(campaignId, messageId, externalMsgId);
-                successCount.incrementAndGet();
+                return false;
             }
 
-            logPeriodicStats();
-            return success;
+            // Check for error response
+            JsonNode response = message.path("response");
+            if (response.has("error")) {
+                JsonNode error = response.get("error");
+                String errorMessage = error.path("message").asText("Unknown error");
+                int errorCode = error.path("code").asInt(0);
 
-        } catch (SQLException e) {
-            LoggerUtil.error("❌ Database error processing message " + messageId + " for campaign " + campaignId + ": "
-                    + e.getMessage(), e);
-            return false;
+                // Update message status and subscriber if needed
+                boolean success = updateMessageWithError(campaignId, messageId, error);
+                if (errorCode == 551) {
+                    // Update subscriber status for permanent errors
+                    updateSubscriberStatus(campaignId, messageId, errorMessage);
+                }
+                errorCount.incrementAndGet();
+                return success;
+            } else {
+                // Handle success case
+                String externalMsgId = response.path("message_id").asText("");
+                boolean success = updateMessageWithSuccess(campaignId, messageId, externalMsgId);
+                if (success) {
+                    successCount.incrementAndGet();
+                }
+                return success;
+            }
+        } catch (Exception e) {
+            errorCount.incrementAndGet();
+            LoggerUtil.error("❌ Error processing message: " + e.getMessage(), e);
+            throw e;
+        } finally {
+            logPeriodicStats();
         }
     }
 
@@ -365,6 +355,38 @@ public class WorkerUpdateStatus {
                 LoggerUtil.error("Failed to restore autoCommit setting", e);
             }
         }
+    }
+
+    private boolean ensureDbConnection() {
+        for (int attempt = 1; attempt <= MAX_DB_RECONNECT_ATTEMPTS; attempt++) {
+            try {
+                if (dbConnection == null || dbConnection.isClosed()) {
+                    LoggerUtil.info("🔄 Reconnecting to database (attempt " + attempt + ")");
+                    initDbConnection();
+                }
+
+                // Testar a conexão com uma consulta simples
+                try (Statement stmt = dbConnection.createStatement()) {
+                    stmt.executeQuery("SELECT 1");
+                    return true;
+                }
+            } catch (SQLException e) {
+                LoggerUtil.error("❌ Failed to ensure database connection on attempt " + attempt + ": " + e.getMessage(),
+                        e);
+                if (attempt < MAX_DB_RECONNECT_ATTEMPTS) {
+                    try {
+                        int sleepTime = 1000 * attempt; // Backoff exponencial
+                        LoggerUtil.info("Waiting " + sleepTime + "ms before retry...");
+                        Thread.sleep(sleepTime);
+                    } catch (InterruptedException ie) {
+                        Thread.currentThread().interrupt();
+                        LoggerUtil.warn("Thread interrupted while waiting to retry database connection");
+                    }
+                }
+            }
+        }
+        LoggerUtil.error("❌ Failed to establish database connection after " + MAX_DB_RECONNECT_ATTEMPTS + " attempts");
+        return false;
     }
 
     private boolean updateMessageWithError(int campaignId, int messageId, JsonNode error) throws SQLException {
@@ -445,15 +467,6 @@ public class WorkerUpdateStatus {
     private void updateSubscriberStatus(int campaignId, int messageId, String errorMessage) throws SQLException {
         LoggerUtil.debug("🔄 Updating subscriber status for campaign=" + campaignId + ", message=" + messageId);
 
-        // Verificar se a tabela existe antes de tentar atualizar
-        try (Statement checkStmt = dbConnection.createStatement()) {
-            ResultSet rs = checkStmt.executeQuery("SHOW TABLES LIKE 'messenger_bot_subscriber'");
-            if (!rs.next()) {
-                LoggerUtil.warn("⚠️ messenger_bot_subscriber table does not exist, skipping subscriber update");
-                return;
-            }
-        }
-
         String sql = """
                 UPDATE messenger_bot_subscriber
                 SET last_error_message = ?, unavailable = 1
@@ -473,70 +486,21 @@ public class WorkerUpdateStatus {
         }
     }
 
-    private void reconnectChannel() {
-        try {
-            LoggerUtil.info("🔄 Attempting to reconnect RabbitMQ channel...");
-            if (connection == null || !connection.isOpen()) {
-                ConnectionFactory factory = new ConnectionFactory();
-                factory.setHost(amqpHost);
-                factory.setPort(amqpPort);
-                factory.setUsername(amqpUsername);
-                factory.setPassword(amqpPassword);
-                factory.setVirtualHost(amqpVhost);
-                factory.setConnectionTimeout(10000);
-
-                connection = factory.newConnection("worker-update-status");
-                LoggerUtil.info("✅ RabbitMQ connection reestablished");
-            }
-
-            if (channel == null || !channel.isOpen()) {
-                channel = connection.createChannel();
-                channel.queueDeclare(queueName, true, false, false, null);
-                LoggerUtil.info("✅ RabbitMQ channel recreated");
-            }
-
-            LoggerUtil.info("✅ RabbitMQ channel reconnected successfully");
-        } catch (Exception e) {
-            LoggerUtil.error("❌ Failed to reconnect RabbitMQ channel", e);
-        }
+    /**
+     * Returns the current started state of the worker
+     * 
+     * @return boolean indicating if the worker has been started
+     */
+    public boolean isStarted() {
+        return started;
     }
 
-    private void logPeriodicStats() {
-        long now = System.currentTimeMillis();
-        if (now - lastStatsLogTime > STATS_LOG_INTERVAL_MS) {
-            LoggerUtil.info(String.format(
-                    "📊 Status Update Worker [%s]: Processed: %d, Success: %d, Errors: %d",
-                    Thread.currentThread().getName(),
-                    processedCount.get(), successCount.get(), errorCount.get()));
-            lastStatsLogTime = now;
-        }
-    }
-
-    private boolean shouldRequeueError(Exception e) {
-        // Requeue for transient errors como conexão e timeout
-        if (e instanceof SQLException) {
-            String message = e.getMessage().toLowerCase();
-            // Requeue para erros de conexão, mas não para outros erros SQL
-            boolean shouldRequeue = message.contains("connection") ||
-                    message.contains("timeout") ||
-                    message.contains("deadlock");
-            LoggerUtil.debug("SQL error will " + (shouldRequeue ? "" : "not ") + "be requeued: " + e.getMessage());
-            return shouldRequeue;
-        }
-
-        if (e instanceof IOException) {
-            LoggerUtil.debug("IOException will be requeued: " + e.getMessage());
-            return true;
-        }
-
-        // Não requeue para erros de formato de mensagem
-        if (e instanceof JsonProcessingException) {
-            LoggerUtil.debug("JsonProcessingException will not be requeued: " + e.getMessage());
-            return false;
-        }
-
-        // Por padrão, requeue erros desconhecidos
-        LoggerUtil.debug("Unknown error type will be requeued: " + e.getClass().getName());
-        return true;
+    /**
+     * Returns the current initialization state of the worker
+     * 
+     * @return boolean indicating if the worker has been initialized
+     */
+    public boolean isInitialized() {
+        return initialized;
     }
 }

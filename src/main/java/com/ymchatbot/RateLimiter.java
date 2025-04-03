@@ -7,6 +7,8 @@ import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.beans.factory.annotation.Value;
 import org.springframework.stereotype.Component;
 
+import com.ymchatbot.util.LoggerUtil;
+
 import java.time.Duration;
 import java.util.concurrent.atomic.AtomicReference;
 
@@ -17,39 +19,35 @@ public class RateLimiter {
 
     @Autowired
     public RateLimiter(
-        @Value("${application.rate-limit.script.seconds:50000}") int maxMessagesPerSecond,
-        @Value("${application.rate-limit.script.minutes:1000000}") int maxMessagesPerMinute
-    ) {
+            @Value("${application.rate-limit.script.seconds:50000}") int maxMessagesPerSecond,
+            @Value("${application.rate-limit.script.minutes:1000000}") int maxMessagesPerMinute) {
         this.secondBucketRef = new AtomicReference<>(createSecondBucket(maxMessagesPerSecond));
         this.minuteBucketRef = new AtomicReference<>(createMinuteBucket(maxMessagesPerMinute));
 
         LoggerUtil.info(String.format(
-            "RateLimiter initialized with: %d messages/second, %d messages/minute",
-            maxMessagesPerSecond,
-            maxMessagesPerMinute
-        ));
+                "RateLimiter initialized with: %d messages/second, %d messages/minute",
+                maxMessagesPerSecond,
+                maxMessagesPerMinute));
     }
 
     private Bucket createSecondBucket(int maxMessagesPerSecond) {
         Bandwidth limit = Bandwidth.classic(
-            maxMessagesPerSecond, 
-            Refill.greedy(maxMessagesPerSecond, Duration.ofSeconds(1))
-        );
-        
+                maxMessagesPerSecond,
+                Refill.greedy(maxMessagesPerSecond, Duration.ofSeconds(1)));
+
         return Bucket.builder()
-            .addLimit(limit)
-            .build();
+                .addLimit(limit)
+                .build();
     }
 
     private Bucket createMinuteBucket(int maxMessagesPerMinute) {
         Bandwidth limit = Bandwidth.classic(
-            maxMessagesPerMinute, 
-            Refill.greedy(maxMessagesPerMinute, Duration.ofMinutes(1))
-        );
-        
+                maxMessagesPerMinute,
+                Refill.greedy(maxMessagesPerMinute, Duration.ofMinutes(1)));
+
         return Bucket.builder()
-            .addLimit(limit)
-            .build();
+                .addLimit(limit)
+                .build();
     }
 
     public boolean tryAcquire() {
@@ -79,14 +77,13 @@ public class RateLimiter {
     public void updateRateLimits(int newMaxMessagesPerSecond, int newMaxMessagesPerMinute) {
         newMaxMessagesPerSecond = Math.max(1, newMaxMessagesPerSecond);
         newMaxMessagesPerMinute = Math.max(1, newMaxMessagesPerMinute);
-        
+
         secondBucketRef.set(createSecondBucket(newMaxMessagesPerSecond));
         minuteBucketRef.set(createMinuteBucket(newMaxMessagesPerMinute));
-        
+
         LoggerUtil.info(String.format(
-            "Rate limits updated: %d messages/second, %d messages/minute", 
-            newMaxMessagesPerSecond, 
-            newMaxMessagesPerMinute
-        ));
+                "Rate limits updated: %d messages/second, %d messages/minute",
+                newMaxMessagesPerSecond,
+                newMaxMessagesPerMinute));
     }
 }

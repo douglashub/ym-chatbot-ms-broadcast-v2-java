@@ -1,12 +1,17 @@
-package com.ymchatbot;
+package com.ymchatbot.worker;
 
-import org.springframework.beans.factory.annotation.Value;
+// Update imports to be specific
 import org.springframework.scheduling.annotation.EnableScheduling;
 import org.springframework.scheduling.annotation.Scheduled;
 import org.springframework.stereotype.Component;
 import org.springframework.beans.factory.annotation.Autowired;
 import jakarta.annotation.PostConstruct;
-import com.rabbitmq.client.*;
+import com.rabbitmq.client.Channel;
+import com.rabbitmq.client.ConnectionFactory;
+import com.rabbitmq.client.DeliverCallback;
+import com.rabbitmq.client.CancelCallback;
+import com.rabbitmq.client.MessageProperties;
+import com.rabbitmq.client.Delivery;
 import java.io.*;
 import java.nio.charset.StandardCharsets;
 import java.nio.file.*;
@@ -35,6 +40,15 @@ import org.apache.http.impl.nio.conn.PoolingNHttpClientConnectionManager;
 import org.apache.http.impl.nio.reactor.DefaultConnectingIOReactor;
 import org.apache.http.util.EntityUtils;
 
+import com.ymchatbot.FileRateLimiter;
+import com.ymchatbot.RateLimiter;
+import com.ymchatbot.util.LoggerUtil;
+import com.ymchatbot.util.MessageValidator;
+import com.ymchatbot.config.DatabaseConfig;
+import com.ymchatbot.config.RabbitMQConfig;
+import com.ymchatbot.config.RateLimitConfig;
+import com.ymchatbot.config.WorkerConfig;
+
 @Component
 @EnableScheduling
 public class WorkerSendMessage {
@@ -42,40 +56,24 @@ public class WorkerSendMessage {
     private final String updateStatusQueueName = "broadcast-v2/update-status";
     private final int MAX_CONNECTIONS = 200;
 
-    // Add campaign status constants
     private static final int CAMPAIGN_STATUS_COMPLETED = 2;
     private static final int CAMPAIGN_STATUS_ERROR = 4;
     private static final double ERROR_THRESHOLD = 0.5;
 
-    @Value("${application.rate-limit.script.seconds:10000}")
-    private int rateLimitPerSecond;
+    @Autowired
+    private DatabaseConfig databaseConfig;
 
-    @Value("${application.rate-limit.script.minutes:600000}")
-    private int rateLimitPerMinute;
+    @Autowired
+    private RabbitMQConfig rabbitMQConfig;
 
-    @Value("${spring.datasource.url}")
-    private String dbUrl;
+    @Autowired
+    private RateLimitConfig rateLimitConfig;
 
-    @Value("${spring.datasource.username}")
-    private String dbUsername;
+    @Autowired
+    private WorkerConfig workerConfig;
 
-    @Value("${spring.datasource.password}")
-    private String dbPassword;
-
-    @Value("${spring.rabbitmq.host}")
-    private String amqpHost;
-
-    @Value("${spring.rabbitmq.port}")
-    private int amqpPort;
-
-    @Value("${spring.rabbitmq.username}")
-    private String amqpUsername;
-
-    @Value("${spring.rabbitmq.password}")
-    private String amqpPassword;
-
-    @Value("${spring.rabbitmq.virtual-host:/}")
-    private String amqpVhost;
+    @Autowired
+    private ObjectMapper objectMapper;
 
     private RateLimiter rateLimiter;
     private java.sql.Connection dbConnection;
@@ -98,51 +96,41 @@ public class WorkerSendMessage {
 
     @PostConstruct
     public void initialize() throws Exception {
-        // Initialize RateLimiter
-        rateLimiter = new RateLimiter(MAX_CONNECTIONS, MAX_CONNECTIONS);
+        rateLimiter = new RateLimiter(rateLimitConfig.getRateLimitPerSecond(), rateLimitConfig.getRateLimitPerMinute());
 
-        LoggerUtil.info("Starting WorkerSendMessage with rate limits: " + rateLimitPerSecond + "s / "
-                + rateLimitPerMinute + "m");
+        LoggerUtil
+                .info("Starting WorkerSendMessage with rate limits: " + rateLimitConfig.getRateLimitPerSecond() + "s / "
+                        + rateLimitConfig.getRateLimitPerMinute() + "m");
 
         initDbConnection();
         initHttpClient();
-
-        ConnectionFactory factory = new ConnectionFactory();
-        factory.setHost(amqpHost);
-        factory.setPort(amqpPort);
-        factory.setUsername(amqpUsername);
-        factory.setPassword(amqpPassword);
-        factory.setVirtualHost(amqpVhost);
-
-        com.rabbitmq.client.Connection connection = factory.newConnection();
-        channel = connection.createChannel();
-        channel.basicQos(50);
-
-        com.rabbitmq.client.Connection updateStatusConnection = factory.newConnection();
-        updateStatusChannel = updateStatusConnection.createChannel();
+        initializeRabbitMQ();
 
         LoggerUtil.info("WorkerSendMessage initialization complete");
     }
 
     private void initDbConnection() throws SQLException {
-        dbConnection = DriverManager.getConnection(dbUrl, dbUsername, dbPassword);
-        LoggerUtil.info("Database connection established to " + dbUrl);
+        dbConnection = databaseConfig.dataSource().getConnection();
+        LoggerUtil.info("Database connection established");
     }
 
     private void initHttpClient() throws Exception {
         try {
-            PoolingNHttpClientConnectionManager connManager = new PoolingNHttpClientConnectionManager(
-                    new DefaultConnectingIOReactor());
+            DefaultConnectingIOReactor ioReactor = new DefaultConnectingIOReactor();
+            PoolingNHttpClientConnectionManager connManager = new PoolingNHttpClientConnectionManager(ioReactor);
             connManager.setMaxTotal(MAX_CONNECTIONS);
             connManager.setDefaultMaxPerRoute(MAX_CONNECTIONS);
+
             RequestConfig requestConfig = RequestConfig.custom()
                     .setConnectTimeout(30000)
                     .setSocketTimeout(30000)
                     .build();
+
             httpClient = HttpAsyncClients.custom()
                     .setConnectionManager(connManager)
                     .setDefaultRequestConfig(requestConfig)
                     .build();
+
             httpClient.start();
             LoggerUtil.info("HTTP client initialized with " + MAX_CONNECTIONS + " max connections");
         } catch (Exception e) {
@@ -151,97 +139,31 @@ public class WorkerSendMessage {
         }
     }
 
-    public void start() throws IOException {
-        createDirectoryIfNotExists("../storage/logs");
-        createDirectoryIfNotExists("../storage/rate-limit");
+    private void initializeRabbitMQ() throws Exception {
+        ConnectionFactory factory = rabbitMQConfig.rabbitConnectionFactory();
+        com.rabbitmq.client.Connection connection = factory.newConnection("worker-send-message");
 
-        // Declare queues with durable flag
-        boolean durable = true;
-        boolean exclusive = false;
-        boolean autoDelete = false;
-        Map<String, Object> arguments = null;
+        channel = connection.createChannel();
+        channel.basicQos(workerConfig.getScheduledFetchLimit());
 
-        // Declare queues using retry mechanism
-        declareQueueWithRetry(channel, queueName, durable, exclusive, autoDelete, arguments);
-        declareQueueWithRetry(updateStatusChannel, updateStatusQueueName, durable, exclusive, autoDelete, arguments);
-
-        // Set up consumer
-        DeliverCallback deliverCallback = (consumerTag, delivery) -> {
-            try {
-                processMessage(delivery);
-            } catch (Exception e) {
-                errorCounter.incrementAndGet();
-                LoggerUtil.error("Error processing message", e);
-                channel.basicReject(delivery.getEnvelope().getDeliveryTag(), shouldRequeueError(e));
-            }
-        };
-
-        LoggerUtil.info("Starting to consume from queue: " + queueName);
-        channel.basicConsume(queueName, false, deliverCallback, consumerTag -> {
-            LoggerUtil.debug("Consumer cancelled: " + consumerTag);
-        });
-
-        LoggerUtil.info("Worker started and waiting for messages from queue: " + queueName);
-    }
-
-    private void markCampaignAsSending(int campaignId) throws SQLException {
-        String update = "UPDATE messenger_bot_broadcast_serial SET posting_status = 1, is_try_again = 0 WHERE id = ?";
-        try (PreparedStatement stmt = dbConnection.prepareStatement(update)) {
-            stmt.setInt(1, campaignId);
-            stmt.executeUpdate();
-        }
-    }
-
-    private void updateLoggerStatus(int campaignId) {
-        try {
-            String loggerQuery = "INSERT INTO messenger_bot_broadcast_serial_logger (status) VALUES (5)";
-            String loggerSerialQuery = "INSERT INTO messenger_bot_broadcast_serial_logger_serial (logger_id, serial_id) "
-                    +
-                    "VALUES (LAST_INSERT_ID(), ?)";
-
-            try (PreparedStatement loggerStmt = dbConnection.prepareStatement(loggerQuery,
-                    Statement.RETURN_GENERATED_KEYS);
-                    PreparedStatement loggerSerialStmt = dbConnection.prepareStatement(loggerSerialQuery)) {
-
-                loggerStmt.executeUpdate();
-
-                try (ResultSet generatedKeys = loggerStmt.getGeneratedKeys()) {
-                    if (generatedKeys.next()) {
-                        loggerSerialStmt.setInt(1, campaignId);
-                        loggerSerialStmt.executeUpdate();
-                    }
-                }
-            }
-        } catch (SQLException e) {
-            LoggerUtil.warn("Could not update logger status for campaign " + campaignId + ": " + e.getMessage());
-        }
+        com.rabbitmq.client.Connection updateStatusConnection = factory.newConnection("worker-update-status");
+        updateStatusChannel = updateStatusConnection.createChannel();
     }
 
     @Scheduled(fixedDelay = 10000)
     public void scheduledFetchAndEnqueue() {
         try {
-            List<Integer> campaignIds = fetchScheduledCampaigns(10); // Adjust limit as needed
+            List<Integer> campaignIds = fetchScheduledCampaigns(workerConfig.getScheduledFetchLimit());
             for (Integer campaignId : campaignIds) {
                 markCampaignAsSending(campaignId);
                 markCampaignLoggersAsSending(campaignId);
-
-                // Update logger status to 5 (sending)
                 updateLoggerStatus(campaignId);
 
                 ArrayNode messages = fetchMessagesForCampaign(campaignId);
                 if (messages.size() > 0) {
-                    // Check if channel is closed before publishing
                     if (channel == null || !channel.isOpen()) {
                         LoggerUtil.warn("RabbitMQ channel closed, attempting to reopen...");
-                        ConnectionFactory factory = new ConnectionFactory();
-                        factory.setHost(amqpHost);
-                        factory.setPort(amqpPort);
-                        factory.setUsername(amqpUsername);
-                        factory.setPassword(amqpPassword);
-                        factory.setVirtualHost(amqpVhost);
-                        com.rabbitmq.client.Connection connection = factory.newConnection();
-                        channel = connection.createChannel();
-                        channel.basicQos(50);
+                        initializeRabbitMQ();
                         LoggerUtil.info("Channel reopened successfully.");
                     }
 
@@ -256,165 +178,9 @@ public class WorkerSendMessage {
         }
     }
 
-    private ObjectMapper objectMapper = new ObjectMapper();
-
-    private ArrayNode fetchMessagesForCampaign(int campaignId) throws SQLException {
-        String query = """
-                    SELECT
-                        s.id AS messenger_bot_broadcast_serial_send,
-                        s.messenger_bot_subscriber,
-                        p.page_access_token AS token,
-                        c.message AS message,
-                        s.subscriber_name AS lead_name,
-                        s.subscriber_lastname AS lead_last_name,
-                        s.subscribe_id AS subscribe_id
-                    FROM messenger_bot_broadcast_serial_send s
-                    JOIN facebook_rx_fb_page_info p ON p.id = s.page_id
-                    JOIN messenger_bot_broadcast_serial c ON c.id = s.campaign_id
-                    WHERE s.campaign_id = ? AND s.processed = '0'
-                    LIMIT 100
-                """;
-
-        ArrayNode result = objectMapper.createArrayNode();
-
-        try (PreparedStatement stmt = dbConnection.prepareStatement(query)) {
-            stmt.setInt(1, campaignId);
-            try (ResultSet rs = stmt.executeQuery()) {
-                while (rs.next()) {
-                    String rawMessage = rs.getString("message");
-                    if (rawMessage == null || rawMessage.isBlank() || !rawMessage.trim().startsWith("{")) {
-                        LoggerUtil.warn("Skipping non-JSON message for campaign " + campaignId + ": " + rawMessage);
-                        continue;
-                    }
-
-                    // Replace placeholders
-                    String message = rawMessage
-                            .replace("{{first_name}}", Optional.ofNullable(rs.getString("lead_name")).orElse(""))
-                            .replace("{{last_name}}", Optional.ofNullable(rs.getString("lead_last_name")).orElse(""))
-                            .replace("PUT_OTN_TOKEN", Optional.ofNullable(rs.getString("token")).orElse(""))
-                            .replace("PUT_SUBSCRIBER_ID", Optional.ofNullable(rs.getString("subscribe_id")).orElse(""))
-                            .replace("#SUBSCRIBER_ID_REPLACE#",
-                                    Optional.ofNullable(rs.getString("subscribe_id")).orElse(""));
-
-                    // Validate JSON format
-                    ObjectNode messageJson;
-                    try {
-                        messageJson = (ObjectNode) objectMapper.readTree(message.trim());
-                    } catch (JsonProcessingException e) {
-                        LoggerUtil.warn("Skipping malformed message for campaign " + campaignId + ": " + message);
-                        LoggerUtil.warn("Reason: " + e.getMessage());
-                        continue; // Skip malformed message
-                    }
-
-                    ObjectNode item = objectMapper.createObjectNode();
-                    ObjectNode data = objectMapper.createObjectNode();
-                    data.put("messenger_bot_broadcast_serial", campaignId);
-                    data.put("messenger_bot_broadcast_serial_send", rs.getInt("messenger_bot_broadcast_serial_send"));
-                    data.put("messenger_bot_subscriber", rs.getInt("messenger_bot_subscriber"));
-                    item.set("data", data);
-
-                    ObjectNode request = objectMapper.createObjectNode();
-                    request.put("url",
-                            "https://graph.facebook.com/v22.0/me/messages?access_token=" + rs.getString("token"));
-                    request.set("data", messageJson);
-
-                    item.set("request", request);
-                    result.add(item);
-                }
-            }
-        }
-
-        return result;
-    }
-
-    private List<Integer> fetchScheduledCampaigns(int limit) throws SQLException {
-        String query = """
-                    SELECT id FROM messenger_bot_broadcast_serial
-                    WHERE schedule_time < NOW()
-                    AND (posting_status = 0 OR is_try_again = 1)
-                    AND posting_status != 3
-                    ORDER BY schedule_time ASC, total_thread ASC
-                    LIMIT ?
-                """;
-
-        List<Integer> campaignIds = new ArrayList<>();
-        try (PreparedStatement stmt = dbConnection.prepareStatement(query)) {
-            stmt.setInt(1, limit);
-            try (ResultSet rs = stmt.executeQuery()) {
-                while (rs.next()) {
-                    campaignIds.add(rs.getInt("id"));
-                }
-            }
-        }
-        return campaignIds;
-    }
-
-    private void declareQueueWithRetry(Channel channel, String queueName, boolean durable,
-            boolean exclusive, boolean autoDelete,
-            Map<String, Object> arguments) throws IOException {
-        int maxRetries = 5;
-        int retryDelayMs = 1000; // Starting with 1 second
-
-        IOException lastException = null;
-
-        for (int attempt = 1; attempt <= maxRetries; attempt++) {
-            try {
-                LoggerUtil.info("Attempt " + attempt + " - Declaring queue: " + queueName);
-
-                // Declare the queue
-                channel.queueDeclare(queueName, durable, exclusive, autoDelete, arguments);
-
-                // Verify it exists (this will throw an exception if the queue doesn't exist)
-                channel.queueDeclarePassive(queueName);
-
-                // If we get here, the queue exists
-                LoggerUtil.info("Queue successfully declared and verified: " + queueName);
-                return;
-            } catch (IOException e) {
-                lastException = e;
-                LoggerUtil.warn("Queue operation failed on attempt " + attempt + ": " + e.getMessage());
-
-                if (attempt < maxRetries) {
-                    try {
-                        LoggerUtil.info("Waiting " + retryDelayMs + "ms before retrying...");
-                        Thread.sleep(retryDelayMs);
-                        // Exponential backoff
-                        retryDelayMs *= 2;
-                    } catch (InterruptedException ie) {
-                        Thread.currentThread().interrupt();
-                        throw new IOException("Interrupted while waiting to retry queue creation", ie);
-                    }
-                }
-            }
-        }
-
-        // If we got here, all retries failed
-        throw new IOException("Failed to declare and verify queue after " + maxRetries + " attempts", lastException);
-    }
-
-    private void markCampaignLoggersAsSending(int campaignId) {
-        String sql = """
-                    UPDATE messenger_bot_broadcast_serial_logger
-                    SET status = 5
-                    WHERE status = 2 AND id IN (
-                        SELECT logger_id
-                        FROM messenger_bot_broadcast_serial_logger_serial
-                        WHERE serial_id = ?
-                    )
-                """;
-
-        try (PreparedStatement stmt = dbConnection.prepareStatement(sql)) {
-            stmt.setInt(1, campaignId);
-            stmt.executeUpdate();
-        } catch (SQLException e) {
-            LoggerUtil.error("Failed to update campaign loggers status", e);
-        }
-    }
-
     private void processMessage(Delivery delivery) throws Exception {
-        // Add rate limiting check at start
-        boolean allowSecond = FileRateLimiter.allow("yyyyMMdd_HHmmss", rateLimitPerSecond);
-        boolean allowMinute = FileRateLimiter.allow("yyyyMMdd_HHmm", rateLimitPerMinute);
+        boolean allowSecond = FileRateLimiter.allow("yyyyMMdd_HHmmss", rateLimitConfig.getRateLimitPerSecond());
+        boolean allowMinute = FileRateLimiter.allow("yyyyMMdd_HHmm", rateLimitConfig.getRateLimitPerMinute());
 
         if (!allowSecond || !allowMinute) {
             channel.basicReject(delivery.getEnvelope().getDeliveryTag(), true);
@@ -620,7 +386,6 @@ public class WorkerSendMessage {
         return response;
     }
 
-
     private void sendUpdateStatusMessage(ObjectNode message) throws IOException {
         updateStatusChannel.basicPublish("", updateStatusQueueName, MessageProperties.PERSISTENT_TEXT_PLAIN,
                 message.toString().getBytes(StandardCharsets.UTF_8));
@@ -795,5 +560,104 @@ public class WorkerSendMessage {
             this.successfullySent = successfullySent;
             this.lastTryErrorCount = lastTryErrorCount;
         }
+    }
+
+    private List<Integer> fetchScheduledCampaigns(int limit) throws SQLException {
+        List<Integer> campaignIds = new ArrayList<>();
+        String query = """
+                SELECT id FROM messenger_bot_broadcast_serial
+                WHERE posting_status = 0
+                AND schedule_time <= NOW()
+                LIMIT ?
+                """;
+
+        try (PreparedStatement stmt = dbConnection.prepareStatement(query)) {
+            stmt.setInt(1, limit);
+            try (ResultSet rs = stmt.executeQuery()) {
+                while (rs.next()) {
+                    campaignIds.add(rs.getInt("id"));
+                }
+            }
+        }
+        return campaignIds;
+    }
+
+    private void markCampaignAsSending(int campaignId) throws SQLException {
+        String query = "UPDATE messenger_bot_broadcast_serial SET posting_status = 1 WHERE id = ?";
+        try (PreparedStatement stmt = dbConnection.prepareStatement(query)) {
+            stmt.setInt(1, campaignId);
+            stmt.executeUpdate();
+        }
+    }
+
+    private void markCampaignLoggersAsSending(int campaignId) throws SQLException {
+        String query = "UPDATE messenger_bot_broadcast_serial_send SET processed = 0, delivered = 0 WHERE campaign_id = ?";
+        try (PreparedStatement stmt = dbConnection.prepareStatement(query)) {
+            stmt.setInt(1, campaignId);
+            stmt.executeUpdate();
+        }
+    }
+
+    private void updateLoggerStatus(int campaignId) throws SQLException {
+        String query = """
+                UPDATE messenger_bot_broadcast_serial_send
+                SET processed = 1, delivered = 1
+                WHERE campaign_id = ? AND processed = 0
+                """;
+        try (PreparedStatement stmt = dbConnection.prepareStatement(query)) {
+            stmt.setInt(1, campaignId);
+            stmt.executeUpdate();
+        }
+    }
+
+    private ArrayNode fetchMessagesForCampaign(int campaignId) throws SQLException {
+        ArrayNode messages = objectMapper.createArrayNode();
+        String query = """
+                SELECT mbs.*, mbss.id as send_id
+                FROM messenger_bot_broadcast_serial mbs
+                JOIN messenger_bot_broadcast_serial_send mbss ON mbs.id = mbss.campaign_id
+                WHERE mbs.id = ? AND mbss.processed = 0
+                """;
+
+        try (PreparedStatement stmt = dbConnection.prepareStatement(query)) {
+            stmt.setInt(1, campaignId);
+            try (ResultSet rs = stmt.executeQuery()) {
+                while (rs.next()) {
+                    ObjectNode message = objectMapper.createObjectNode();
+                    message.put("campaign_id", rs.getInt("id"));
+                    message.put("send_id", rs.getInt("send_id"));
+                    message.put("message", rs.getString("message"));
+                    // Add any other necessary fields
+                    messages.add(message);
+                }
+            }
+        }
+        return messages;
+    }
+
+    public void start() throws Exception {
+        createDirectoryIfNotExists("storage/logs");
+        createDirectoryIfNotExists("storage/rate-limit");
+
+        // Initialize RabbitMQ queues
+        channel.queueDeclare(queueName, true, false, false, null);
+        updateStatusChannel.queueDeclare(updateStatusQueueName, true, false, false, null);
+
+        // Set up message consumer
+        DeliverCallback deliverCallback = (consumerTag, delivery) -> {
+            try {
+                processMessage(delivery);
+            } catch (Exception e) {
+                LoggerUtil.error("Error processing message", e);
+                boolean shouldRequeue = shouldRequeueError(e);
+                channel.basicReject(delivery.getEnvelope().getDeliveryTag(), shouldRequeue);
+            }
+        };
+
+        CancelCallback cancelCallback = consumerTag -> LoggerUtil.warn("Consumer cancelled by broker: " + consumerTag);
+
+        // Start consuming messages
+        channel.basicConsume(queueName, false, deliverCallback, cancelCallback);
+        LoggerUtil.info("Started consuming messages from queue: " + queueName);
     }
 }

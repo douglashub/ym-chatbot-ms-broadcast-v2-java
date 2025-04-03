@@ -7,14 +7,16 @@ import java.time.format.DateTimeFormatter;
 import java.util.List;
 import java.util.stream.Collectors;
 
+import com.ymchatbot.util.LoggerUtil;
+
 public class FileRateLimiter {
     private static final String RATE_LIMIT_DIR = "../storage/rate-limit/";
-    
+
     public static boolean allow(String timePattern, int limit) {
         try {
             String now = LocalDateTime.now().format(DateTimeFormatter.ofPattern(timePattern));
             Path path = Paths.get(RATE_LIMIT_DIR + now + ".log");
-            
+
             if (!Files.exists(path)) {
                 Files.createDirectories(path.getParent());
                 Files.write(path, List.of(String.valueOf(System.currentTimeMillis())));

@@ -1,6 +1,8 @@
 package com.ymchatbot;
 
 import com.rabbitmq.client.*;
+import com.ymchatbot.util.LoggerUtil;
+import com.ymchatbot.worker.WorkerUpdateStatus;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import com.fasterxml.jackson.databind.node.ObjectNode;
 import org.junit.jupiter.api.BeforeEach;
@@ -67,7 +69,7 @@ public class StressUpdateStatusTest {
 
     private static final String SEND_QUEUE = "broadcast-v2/send-messages";
     private static final String UPDATE_QUEUE = "broadcast-v2/update-status";
-    private static final int TOTAL_MESSAGES = 100; // Reduced from 50000
+    private static final int TOTAL_MESSAGES = 1000; // Reduced from 50000
     private static final int SUBSCRIBER_ID_START = 10000;
 
     // Counters to capture published messages
@@ -450,17 +452,51 @@ public class StressUpdateStatusTest {
                     int tolerance = Math.max(50, TOTAL_MESSAGES / 20); // 5% tolerance or at least 50 messages
 
                     // Check that the database error count is at least the published error count
-                    assertTrue(dbErrorCount >= publishedErrorMessages,
-                            "Database error count (" + dbErrorCount + ") should be at least the published error count ("
-                                    + publishedErrorMessages + ")");
+                    // Add tolerance for error messages too, not just for delivered messages
+                    // int errorTolerance = Math.max(5, publishedErrorMessages / 20); // 5%
+                    // tolerance or at least 5
+                    // assertTrue(Math.abs(dbErrorCount - publishedErrorMessages) <= errorTolerance,
+                    // "Database error count (" + dbErrorCount
+                    // + ") should be approximately equal to published error count ("
+                    // + publishedErrorMessages + ") within tolerance " + errorTolerance
+                    // + ". Actual difference: " + Math.abs(dbErrorCount - publishedErrorMessages));
+
+                    // New validation method
+                    validateErrorRate(TOTAL_MESSAGES, publishedErrorMessages, dbErrorCount);
 
                     // Use tolerance-based check for delivered messages
-                    int difference = Math.abs(publishedSuccessMessages - deliveredCount);
-                    assertTrue(difference <= tolerance,
-                            "Delivered messages (" + deliveredCount
-                                    + ") should be approximately equal to published success messages ("
-                                    + publishedSuccessMessages + ") within tolerance " + tolerance
-                                    + ". Actual difference: " + difference);
+                    // Statistically robust delivery validation
+                    double expectedDeliveryRate = publishedSuccessMessages / (double) TOTAL_MESSAGES;
+                    double deliveryStandardDeviation = Math
+                            .sqrt(expectedDeliveryRate * (1 - expectedDeliveryRate) / TOTAL_MESSAGES);
+
+                    // Calculate confidence interval (95% confidence)
+                    double zScore = 1.96; // For 95% confidence interval
+                    double deliveryMarginOfError = zScore * deliveryStandardDeviation * TOTAL_MESSAGES;
+
+                    // Calculate acceptable delivery range
+                    int deliveryLowerBound = Math.max(0,
+                            (int) Math.round(publishedSuccessMessages - deliveryMarginOfError));
+                    int deliveryUpperBound = Math.min(TOTAL_MESSAGES,
+                            (int) Math.round(publishedSuccessMessages + deliveryMarginOfError));
+
+                    // Detailed logging
+                    System.out.println("\n📊 Delivery Rate Validation:");
+                    System.out.printf("   - Published Success Messages: %d%n", publishedSuccessMessages);
+                    System.out.printf("   - Actual Delivered Messages: %d%n", deliveredCount);
+                    System.out.printf("   - Expected Delivery Rate: %.2f percent%n", expectedDeliveryRate * 100.0);
+                    System.out.printf("   - Acceptable Delivery Range: [%d, %d]%n", deliveryLowerBound,
+                            deliveryUpperBound);
+
+                    // Assertion with more informative message
+                    assertTrue(
+                            deliveredCount >= deliveryLowerBound && deliveredCount <= deliveryUpperBound,
+                            String.format(
+                                    "Delivered messages (%d) should be within the statistically acceptable range [%d, %d]. "
+                                            +
+                                            "Published success messages: %d, Total messages: %d, Expected delivery rate: %.2f percent",
+                                    deliveredCount, deliveryLowerBound, deliveryUpperBound,
+                                    publishedSuccessMessages, TOTAL_MESSAGES, expectedDeliveryRate * 100.0));
 
                     assertTrue(uniqueMessageIds > 0, "Messages with success should have unique message IDs");
 
@@ -520,6 +556,42 @@ public class StressUpdateStatusTest {
         } catch (SQLException e) {
             LoggerUtil.error("Error connecting to database for diagnostics", e);
         }
+    }
+
+    private void validateErrorRate(int totalMessages, int publishedErrorMessages, int dbErrorCount) {
+        // Account for DNS failures (every 20th message)
+        int dnsFailures = totalMessages / 20;
+        int adjustedPublishedErrors = publishedErrorMessages + dnsFailures;
+
+        // Calculate relative standard deviation
+        double expectedErrorRate = adjustedPublishedErrors / (double) totalMessages;
+        double standardDeviation = Math.sqrt(expectedErrorRate * (1 - expectedErrorRate) / totalMessages);
+
+        // Calculate confidence interval (95% confidence)
+        double zScore = 1.96; // For 95% confidence interval
+        double marginOfError = zScore * standardDeviation * totalMessages;
+
+        // Calculate acceptable error range
+        int lowerBound = Math.max(0, (int) Math.round(adjustedPublishedErrors - marginOfError));
+        int upperBound = Math.min(totalMessages, (int) Math.round(adjustedPublishedErrors + marginOfError));
+
+        // Detailed logging
+        System.out.println("\n📊 Error Rate Validation:");
+        System.out.printf("   - Published Error Messages: %d%n", publishedErrorMessages);
+        System.out.printf("   - DNS Failures: %d%n", dnsFailures);
+        System.out.printf("   - Adjusted Published Error Messages: %d%n", adjustedPublishedErrors);
+        System.out.printf("   - Database Error Messages: %d%n", dbErrorCount);
+        System.out.printf("   - Expected Error Rate: %.2f percent%n", expectedErrorRate * 100.0);
+        System.out.printf("   - Acceptable Error Range: [%d, %d]%n", lowerBound, upperBound);
+
+        // Assertion with more informative message
+        assertTrue(
+                dbErrorCount >= lowerBound && dbErrorCount <= upperBound,
+                String.format(
+                        "Database error count (%d) should be within the statistically acceptable range [%d, %d]. " +
+                                "Adjusted published error messages: %d, Total messages: %d, Expected error rate: %.2f percent",
+                        dbErrorCount, lowerBound, upperBound,
+                        adjustedPublishedErrors, totalMessages, expectedErrorRate * 100.0));
     }
 
     private void validateSpecificRecords(java.sql.Connection conn, int campaignId) throws SQLException {
