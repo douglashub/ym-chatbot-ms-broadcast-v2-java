@@ -9,6 +9,8 @@ import com.fasterxml.jackson.databind.node.ObjectNode;
  * Utility class to validate and standardize message formats using Jackson
  */
 public class MessageValidator {
+   
+    @SuppressWarnings("unused")
     private static final ObjectMapper objectMapper = new ObjectMapper();
 
     /**
