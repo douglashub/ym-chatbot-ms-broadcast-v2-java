@@ -1,3 +1,4 @@
+
 package com.ymchatbot.worker;
 
 // Update imports to be specific
@@ -48,6 +49,7 @@ import com.ymchatbot.config.DatabaseConfig;
 import com.ymchatbot.config.RabbitMQConfig;
 import com.ymchatbot.config.RateLimitConfig;
 import com.ymchatbot.config.WorkerConfig;
+import com.ymchatbot.service.FacebookService;
 
 @Component
 @EnableScheduling
@@ -74,6 +76,9 @@ public class WorkerSendMessage {
 
     @Autowired
     private ObjectMapper objectMapper;
+
+    @Autowired
+    private FacebookService facebookService;
 
     private RateLimiter rateLimiter;
     private java.sql.Connection dbConnection;
@@ -188,34 +193,28 @@ public class WorkerSendMessage {
             return;
         }
 
-        // Only log at DEBUG level when really needed
         if (LoggerUtil.isDebugEnabled()) {
             LoggerUtil.debug("Starting processing message");
         }
 
         String messageBody = new String(delivery.getBody(), StandardCharsets.UTF_8);
-
-        // Use the validator to standardize the message format
         ArrayNode data;
         try {
             data = MessageValidator.validateAndStandardize(messageBody, objectMapper);
         } catch (JsonProcessingException e) {
             LoggerUtil.error("Failed to parse message as JSON. Message body: " +
                     messageBody.substring(0, Math.min(messageBody.length(), 100)) + "...", e);
-            // Don't requeue malformed messages to avoid infinite loops
             channel.basicReject(delivery.getEnvelope().getDeliveryTag(), false);
             errorCounter.incrementAndGet();
             return;
         }
 
-        // Empty array check
         if (data.size() == 0) {
             channel.basicAck(delivery.getEnvelope().getDeliveryTag(), false);
             LoggerUtil.debug("Empty message array, acknowledged without processing");
             return;
         }
 
-        // Check if campaign is active
         int campaignId;
         try {
             ObjectNode firstItem = (ObjectNode) data.get(0);
@@ -229,11 +228,9 @@ public class WorkerSendMessage {
 
         if (!isCampaignActive(campaignId)) {
             channel.basicAck(delivery.getEnvelope().getDeliveryTag(), false);
-
-            // Batch logging for inactive campaigns
             inactiveCampaignCounter.incrementAndGet();
             long now = System.currentTimeMillis();
-            if (inactiveCampaignCounter.get() % 500 == 0 || (now - lastInactiveLogTime) > 10_000) {
+            if (inactiveCampaignCounter.get() % 500 == 0 || (now - lastInactiveLogTime) > 10000) {
                 LoggerUtil.debug("Skipped " + inactiveCampaignCounter.get() + " inactive campaigns so far.");
                 lastInactiveLogTime = now;
             }
@@ -241,35 +238,14 @@ public class WorkerSendMessage {
         }
 
         String currentTimestamp = getCurrentTimestamp();
-
-        // Process messages
         long startTime = System.nanoTime();
-        Map<Integer, CompletableFuture<ObjectNode>> futures = new HashMap<>();
 
-        // Process each message item
-        for (int i = 0; i < data.size(); i++) {
-            try {
-                ObjectNode item = (ObjectNode) data.get(i);
-                // Normalize the request structure
-                item = MessageValidator.normalizeRequestStructure(item, objectMapper);
-
-                ObjectNode requestObj = (ObjectNode) item.get("request");
-                String url = requestObj.get("url").asText().replace("\\/", "/");
-                String requestBody = requestObj.get("data").toString();
-
-                futures.put(i, sendHttpRequestAsync(url, requestBody));
-            } catch (Exception e) {
-                LoggerUtil.warn("Skipping malformed message at index " + i + ": " + e.getMessage());
-                // Continue processing other messages
-            }
-        }
-
-        // Wait for all requests to complete
+        // Process all message items using the new processMessages method
+        Map<Integer, CompletableFuture<ObjectNode>> futures = processMessages(data);
         CompletableFuture<Void> allRequests = CompletableFuture
                 .allOf(futures.values().toArray(new CompletableFuture[0]));
         allRequests.get();
 
-        // Process responses
         Map<Integer, ObjectNode> responses = new HashMap<>();
         for (Map.Entry<Integer, CompletableFuture<ObjectNode>> entry : futures.entrySet()) {
             try {
@@ -280,24 +256,22 @@ public class WorkerSendMessage {
             }
         }
 
-        // Send status updates
+        // Send update status messages for each item
         for (int i = 0; i < data.size(); i++) {
             if (!responses.containsKey(i)) {
-                continue; // Skip if this index was malformed and not processed
+                continue;
             }
-
             try {
                 ObjectNode item = (ObjectNode) data.get(i);
                 ObjectNode response = responses.get(i);
                 ObjectNode updateStatusMessage = objectMapper.createObjectNode();
 
-                // Extract data for status update
+                // Extract data for status update; use 'data' if present or the entire item
                 ObjectNode dataObj = item.has("data") ? (ObjectNode) item.get("data") : item;
 
                 updateStatusMessage.put("messenger_bot_broadcast_serial",
                         MessageValidator.extractCampaignId(item));
 
-                // Extract other required fields or use defaults
                 try {
                     updateStatusMessage.put("messenger_bot_broadcast_serial_send",
                             dataObj.get("messenger_bot_broadcast_serial_send").asInt());
@@ -326,13 +300,9 @@ public class WorkerSendMessage {
             updateCampaignStatus(campaignId, currentTimestamp);
         } catch (SQLException e) {
             LoggerUtil.error("Failed to update campaign status", e);
-            // Don't rethrow to avoid message requeue
         }
 
-        // Acknowledge the delivery
         channel.basicAck(delivery.getEnvelope().getDeliveryTag(), false);
-
-        // Update counters and log stats
         processedMessageCounter.incrementAndGet();
 
         if (LoggerUtil.isDebugEnabled()) {
@@ -340,43 +310,50 @@ public class WorkerSendMessage {
             LoggerUtil.debug("Completed processing " + data.size() + " messages in " + duration + "ms");
         }
 
-        // Log stats periodically
         logPeriodicStats();
     }
 
-    private CompletableFuture<ObjectNode> sendHttpRequestAsync(String url, String requestBody) {
-        CompletableFuture<ObjectNode> future = new CompletableFuture<>();
-        try {
-            HttpPost httpPost = new HttpPost(url);
-            httpPost.setHeader("Content-Type", "application/json");
-            httpPost.setEntity(new StringEntity(requestBody));
-            httpClient.execute(httpPost, new FutureCallback<HttpResponse>() {
-                public void completed(org.apache.http.HttpResponse result) {
-                    try {
-                        HttpEntity entity = result.getEntity();
-                        String responseBody = EntityUtils.toString(entity);
-                        future.complete((ObjectNode) objectMapper.readTree(responseBody));
-                    } catch (Exception e) {
-                        future.complete(createErrorResponse(e.getMessage()));
-                        LoggerUtil.error("Error processing HTTP response", e);
+    private CompletableFuture<ObjectNode> sendHttpRequestAsync(String url, String requestBody, String facebookToken) {
+        // If a Facebook token is provided, delegate to FacebookService.
+        if (facebookToken != null && !facebookToken.isEmpty()) {
+            return facebookService.sendMessage(facebookToken, requestBody);
+        } else {
+            CompletableFuture<ObjectNode> future = new CompletableFuture<>();
+            try {
+                HttpPost httpPost = new HttpPost(url);
+                httpPost.setHeader("Content-Type", "application/json");
+                httpPost.setEntity(new StringEntity(requestBody));
+                httpClient.execute(httpPost, new FutureCallback<HttpResponse>() {
+                    @Override
+                    public void completed(HttpResponse result) {
+                        try {
+                            HttpEntity entity = result.getEntity();
+                            String responseBody = EntityUtils.toString(entity, StandardCharsets.UTF_8);
+                            future.complete((ObjectNode) objectMapper.readTree(responseBody));
+                        } catch (Exception e) {
+                            future.complete(createErrorResponse(e.getMessage()));
+                            LoggerUtil.error("Error processing HTTP response", e);
+                        }
                     }
-                }
 
-                public void failed(Exception ex) {
-                    future.complete(createErrorResponse(ex.getMessage()));
-                    LoggerUtil.error("HTTP request failed", ex);
-                }
+                    @Override
+                    public void failed(Exception ex) {
+                        future.complete(createErrorResponse(ex.getMessage()));
+                        LoggerUtil.error("HTTP request failed", ex);
+                    }
 
-                public void cancelled() {
-                    future.complete(createErrorResponse("Request cancelled"));
-                    LoggerUtil.debug("HTTP request cancelled");
-                }
-            });
-        } catch (Exception e) {
-            future.complete(createErrorResponse(e.getMessage()));
-            LoggerUtil.error("Error sending HTTP request", e);
+                    @Override
+                    public void cancelled() {
+                        future.complete(createErrorResponse("Request cancelled"));
+                        LoggerUtil.debug("HTTP request cancelled");
+                    }
+                });
+            } catch (Exception e) {
+                future.complete(createErrorResponse(e.getMessage()));
+                LoggerUtil.error("Error sending HTTP request", e);
+            }
+            return future;
         }
-        return future;
     }
 
     private ObjectNode createErrorResponse(String errorMessage) {
@@ -523,6 +500,30 @@ public class WorkerSendMessage {
         }
     }
 
+    private Map<Integer, CompletableFuture<ObjectNode>> processMessages(ArrayNode data) throws Exception {
+        Map<Integer, CompletableFuture<ObjectNode>> futures = new HashMap<>();
+        for (int i = 0; i < data.size(); i++) {
+            try {
+                ObjectNode item = (ObjectNode) data.get(i);
+                // Normalize the request structure
+                item = MessageValidator.normalizeRequestStructure(item, objectMapper);
+                ObjectNode requestObj = (ObjectNode) item.get("request");
+                String url = requestObj.get("url").asText().replace("\\/", "/");
+                String requestBody = requestObj.get("data").toString();
+                // Retrieve the Facebook token if available
+                String facebookToken = "";
+                if (item.has("token")) {
+                    facebookToken = item.get("token").asText();
+                }
+                // Call the updated sendHttpRequestAsync with the token parameter.
+                futures.put(i, sendHttpRequestAsync(url, requestBody, facebookToken));
+            } catch (Exception e) {
+                LoggerUtil.warn("Skipping malformed message at index " + i + ": " + e.getMessage());
+            }
+        }
+        return futures;
+    }
+
     private void updateCampaignStatusInDatabase(int campaignId, int status, String sentTime) throws SQLException {
         String updateQuery = """
                 UPDATE messenger_bot_broadcast_serial
@@ -613,12 +614,12 @@ public class WorkerSendMessage {
     private ArrayNode fetchMessagesForCampaign(int campaignId) throws SQLException {
         ArrayNode messages = objectMapper.createArrayNode();
         String query = """
-                SELECT mbs.*, mbss.id as send_id
+                SELECT mbs.*, mbss.id as send_id, fb.page_access_token as token
                 FROM messenger_bot_broadcast_serial mbs
                 JOIN messenger_bot_broadcast_serial_send mbss ON mbs.id = mbss.campaign_id
+                JOIN facebook_rx_fb_page_info fb ON fb.id = mbss.page_id
                 WHERE mbs.id = ? AND mbss.processed = 0
                 """;
-
         try (PreparedStatement stmt = dbConnection.prepareStatement(query)) {
             stmt.setInt(1, campaignId);
             try (ResultSet rs = stmt.executeQuery()) {
@@ -627,7 +628,8 @@ public class WorkerSendMessage {
                     message.put("campaign_id", rs.getInt("id"));
                     message.put("send_id", rs.getInt("send_id"));
                     message.put("message", rs.getString("message"));
-                    // Add any other necessary fields
+                    // Inclui o token do Facebook
+                    message.put("token", rs.getString("token"));
                     messages.add(message);
                 }
             }

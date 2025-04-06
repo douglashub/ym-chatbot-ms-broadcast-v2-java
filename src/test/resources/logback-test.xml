@@ -1,0 +1,22 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<configuration>
+    <appender name="CONSOLE" class="ch.qos.logback.core.ConsoleAppender">
+        <encoder>
+            <pattern>%d{HH:mm:ss.SSS} %highlight(%-5level) %logger{36} - %msg%n</pattern>
+        </encoder>
+    </appender>
+
+    <!-- Silence all logs by default -->
+    <root level="OFF">
+        <appender-ref ref="CONSOLE" />
+    </root>
+
+    <!-- Only enable warnings and errors for our package during tests -->
+    <logger name="com.ymchatbot" level="WARN" additivity="false">
+        <appender-ref ref="CONSOLE" />
+    </logger>
+
+    <!-- Special case: silence expected test errors -->
+    <logger name="com.ymchatbot.service.FacebookService" level="OFF" additivity="false"/>
+    <logger name="com.ymchatbot.util.LoggerUtil" level="OFF" additivity="false"/>
+</configuration>
