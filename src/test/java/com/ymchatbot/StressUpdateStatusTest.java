@@ -250,7 +250,7 @@ public class StressUpdateStatusTest {
     }
 
     @Test
-    @Disabled
+    // @Disabled
     public void publishAndValidateStressTest() throws Exception {
         final int RATE_LIMIT_PER_MINUTE = 12000;
         final int RATE_LIMIT_INTERVAL_MS = 60000 / RATE_LIMIT_PER_MINUTE;
