@@ -43,12 +43,14 @@ class FacebookServiceTest {
 
     @BeforeEach
     void setUp() {
-        facebookService = new FacebookService(httpClient, objectMapper);
+        // In test mode we pass null for tokenManager and rateProperties to trigger fake behavior.
+        facebookService = new FacebookService(httpClient, objectMapper, null, null);
     }
 
     @Nested
     @DisplayName("When sending message with fake token")
     class FakeTokenTests {
+        // This value should match the fake token configured in your application-test.yml.
         private static final String FAKE_TOKEN = "FAKE_FACEBOOK_TOKEN_FOR_TEST";
         private static final String PAYLOAD = "{\"dummy\": \"data\"}";
 
@@ -66,6 +68,7 @@ class FacebookServiceTest {
     @Nested
     @DisplayName("When sending message with real token")
     class RealTokenTests {
+        // This value is used to simulate a real token.
         private static final String REAL_TOKEN = "VALID_FACEBOOK_TOKEN";
         private static final String PAYLOAD = "{\"message\": \"Hello\"}";
         private static final String EXPECTED_URL = "https://graph.facebook.com/v22.0/me/messages?access_token=" + REAL_TOKEN;
@@ -142,9 +145,10 @@ class FacebookServiceTest {
         RuntimeException initializationError = new RuntimeException("Initialization error");
         doThrow(initializationError).when(httpClient).execute(any(HttpPost.class), any(FutureCallback.class));
 
-        CompletableFuture<ObjectNode> future = facebookService.sendMessage("ANY_TOKEN", "{}");
-        
-        ExecutionException exception = assertThrows(ExecutionException.class, future::get);
-        assertEquals(initializationError, exception.getCause());
+        // Because the exception is thrown synchronously by the execute() call, we expect sendMessage() itself to throw.
+        RuntimeException thrown = assertThrows(RuntimeException.class, () -> {
+            facebookService.sendMessage("ANY_TOKEN", "{}");
+        });
+        assertEquals(initializationError, thrown);
     }
 }

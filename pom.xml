@@ -78,6 +78,12 @@
             <version>7.6.0</version>
         </dependency>
 
+        <dependency>
+            <groupId>com.github.ben-manes.caffeine</groupId>
+            <artifactId>caffeine</artifactId>
+            <version>3.1.6</version>
+        </dependency>
+
         <!-- Jakarta Annotation API -->
         <dependency>
             <groupId>jakarta.annotation</groupId>

@@ -38,6 +38,19 @@ spring:
         retry:
           enabled: false
 
+facebook:
+  client:
+    id: ${FACEBOOK_CLIENT_ID:fake_app_id}
+    secret: ${FACEBOOK_CLIENT_SECRET:fake_app_secret}
+    refresh-token: ${FACEBOOK_REFRESH_TOKEN:fake_refresh_token}
+  token:
+    cacheMinutes: ${FACEBOOK_TOKEN_CACHE_MINUTES:55}
+    retryMax: ${FACEBOOK_TOKEN_RETRY_MAX:3}
+    retryDelay: ${FACEBOOK_TOKEN_RETRY_DELAY:1000}
+  rate:
+    limit: ${FACEBOOK_API_RATE_LIMIT:10}
+    interval: ${FACEBOOK_API_RATE_INTERVAL:1}
+
 application:
   rate-limit:
     script:

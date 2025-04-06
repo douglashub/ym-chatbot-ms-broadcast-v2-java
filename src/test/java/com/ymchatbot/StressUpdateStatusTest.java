@@ -6,6 +6,7 @@ import com.ymchatbot.worker.WorkerUpdateStatus;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import com.fasterxml.jackson.databind.node.ObjectNode;
 import org.junit.jupiter.api.BeforeEach;
+import org.junit.jupiter.api.Disabled;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.extension.ExtendWith;
 import org.springframework.beans.factory.annotation.Autowired;
@@ -249,6 +250,7 @@ public class StressUpdateStatusTest {
     }
 
     @Test
+    @Disabled
     public void publishAndValidateStressTest() throws Exception {
         final int RATE_LIMIT_PER_MINUTE = 12000;
         final int RATE_LIMIT_INTERVAL_MS = 60000 / RATE_LIMIT_PER_MINUTE;

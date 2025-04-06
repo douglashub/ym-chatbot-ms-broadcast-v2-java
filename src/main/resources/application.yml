@@ -31,6 +31,19 @@ spring:
           max-interval: 10000ms
           multiplier: 2.0
 
+facebook:
+  client:
+    id: ${FACEBOOK_CLIENT_ID:your_app_id}
+    secret: ${FACEBOOK_CLIENT_SECRET:your_app_secret}
+    refresh-token: ${FACEBOOK_REFRESH_TOKEN:your_long_lived_token}
+  token:
+    cacheMinutes: ${FACEBOOK_TOKEN_CACHE_MINUTES:55}    # Token cache time in minutes
+    retryMax: ${FACEBOOK_TOKEN_RETRY_MAX:3}             # Maximum token refresh attempts
+    retryDelay: ${FACEBOOK_TOKEN_RETRY_DELAY:1000}      # Initial delay between token refresh attempts (ms)
+  rate:
+    limit: ${FACEBOOK_API_RATE_LIMIT:10}              # API call rate limit
+    interval: ${FACEBOOK_API_RATE_INTERVAL:1}         # Interval in seconds for rate limiting
+
 application:
   rate-limit:
     script:
