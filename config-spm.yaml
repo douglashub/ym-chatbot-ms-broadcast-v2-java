@@ -1,38 +1,39 @@
-# Exporters: onde os spans e métricas serão enviados.
+# Configuração SPM para Jaeger 1.x
+
+# Exporters: onde os spans e métricas serão enviados
 exporters:
-  # Exportador Prometheus para métricas RED geradas pelo spanmetrics connector.
   prometheus:
     endpoint: "0.0.0.0:8889"
-  # Exportador para armazenamento de spans no backend do Jaeger.
-  jaeger_storage_exporter:
-    # Usando configuração padrão para armazenamento (neste exemplo, memória).
-    # Em produção, você pode usar outros backends (Cassandra, Elasticsearch, etc.).
 
-# Connectors: convertem spans em métricas RED (Request, Error, Duration).
+# Connectors: convertem spans em métricas RED
 connectors:
   spanmetrics:
-    # Configuração padrão.
-    # Se necessário, parâmetros adicionais (como buckets customizados) podem ser definidos aqui.
-    # Por padrão, serão geradas métricas como:
-    #   - calls_total
-    #   - duration_milliseconds_bucket
-    #   - duration_milliseconds_sum
-    #   - duration_milliseconds_count
+    dimensions:
+      - name: service.name
+      - name: span.name
+        rename_to: operation
+      - name: span.kind
+      - name: status.code
+    histogram:
+      unit: ms
+      buckets: [1, 2, 5, 10, 25, 50, 75, 100, 250, 500, 1000, 2500, 5000, 10000]
 
-# Service pipelines: definem os fluxos de dados para traces e para as métricas derivadas dos spans.
+# Configuração do service pipeline
 service:
+  extensions: [jaeger_storage]
   pipelines:
-    # Pipeline de traces: recebe spans via OTLP, processa em lote e exporta para armazenamento e para o connector spanmetrics.
     traces:
       receivers: [otlp]
       processors: [batch]
-      exporters: [jaeger_storage_exporter, spanmetrics]
-    # Pipeline de métricas: recebe métricas geradas pelo connector spanmetrics e exporta para o Prometheus.
+      exporters: [spanmetrics]
     metrics/spanmetrics:
       receivers: [spanmetrics]
       exporters: [prometheus]
+  telemetry:
+    logs:
+      level: debug
 
-# Extensões: configura os backends de armazenamento que o Jaeger Query usará para buscar traces e métricas.
+# Extensões e configuração de armazenamento
 extensions:
   jaeger_storage:
     backends:
@@ -41,16 +42,6 @@ extensions:
     metric_backends:
       default:
         prometheus:
-          endpoint: "http://prometheus:9090"  # Atualize para o endereço do seu Prometheus, se necessário.
-          # Essas flags normalizam os nomes das métricas, ajudando o Jaeger a encontrar:
+          endpoint: "http://prometheus:9090"
           normalize_calls: true
           normalize_duration: true
-
-  # Configuração do Jaeger Query para utilizar os backends definidos.
-  jaeger_query:
-    traces: default
-    metrics_storage: default
-
-# Monitor: habilita a aba “Monitor” na UI do Jaeger para visualização dos agregados RED.
-monitor:
-  menuEnabled: true

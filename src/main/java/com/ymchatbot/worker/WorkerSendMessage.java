@@ -159,7 +159,9 @@ public class WorkerSendMessage {
     }
 
     @Scheduled(fixedDelay = 10000)
-    @Observed(name = "worker.send_message.scheduled_fetch_enqueue", contextualName = "worker-scheduled-fetch-enqueue")
+    @Observed(name = "worker.send_message.scheduled_fetch_enqueue", 
+         contextualName = "worker-scheduled-fetch-enqueue",
+         lowCardinalityKeyValues = {"span.kind", "internal"})
     public void scheduledFetchAndEnqueue() {
         try {
             List<Integer> campaignIds = fetchScheduledCampaigns(workerConfig.getScheduledFetchLimit());
@@ -187,7 +189,9 @@ public class WorkerSendMessage {
         }
     }
 
-    @Observed(name = "worker.send_message.process_message", contextualName = "worker-process-message")
+    @Observed(name = "worker.send_message.process_message", 
+         contextualName = "worker-process-message",
+         lowCardinalityKeyValues = {"span.kind", "consumer"})
     private void processMessage(Delivery delivery) throws Exception {
         boolean allowSecond = FileRateLimiter.allow("yyyyMMdd_HHmmss", rateLimitConfig.getRateLimitPerSecond());
         boolean allowMinute = FileRateLimiter.allow("yyyyMMdd_HHmm", rateLimitConfig.getRateLimitPerMinute());
@@ -480,7 +484,9 @@ public class WorkerSendMessage {
             throw e;
         }
     }
-    @Observed(name = "worker.send_message.get_campaign_metrics", contextualName = "worker-get-campaign-metrics")
+    @Observed(name = "worker.send_message.get_campaign_metrics", 
+         contextualName = "worker-get-campaign-metrics",
+         lowCardinalityKeyValues = {"span.kind", "internal"})
     private CampaignMetrics getCampaignMetrics(int campaignId) throws SQLException {
         String query = """
                 SELECT
@@ -642,8 +648,9 @@ public class WorkerSendMessage {
         return messages;
     }
 
-    // Add @Observed annotation to the existing start() method
-    @Observed(name = "worker.send_message.start", contextualName = "worker-send-message-start")
+    @Observed(name = "worker.send_message.start", 
+         contextualName = "worker-send-message-start",
+         lowCardinalityKeyValues = {"span.kind", "internal"})
     public synchronized void start() throws Exception {
         createDirectoryIfNotExists("storage/logs");
         createDirectoryIfNotExists("storage/rate-limit");

@@ -61,7 +61,8 @@ public class WorkerUpdateStatus {
     }
 
     @Observed(name = "worker.update_status.initialize",
-              contextualName = "worker-update-status-initialize")
+         contextualName = "worker-update-status-initialize",
+         lowCardinalityKeyValues = {"span.kind", "internal"})
     public synchronized void initialize() throws Exception {
         if (initialized) {
             LoggerUtil.info("WorkerUpdateStatus already initialized, skipping initialization");
@@ -82,7 +83,8 @@ public class WorkerUpdateStatus {
     }
 
     @Observed(name = "worker.update_status.start",
-              contextualName = "worker-update-status-start")
+         contextualName = "worker-update-status-start",
+         lowCardinalityKeyValues = {"span.kind", "internal"})
     public synchronized void start() throws IOException {
         if (started) {
             LoggerUtil.info("WorkerUpdateStatus already started, skipping start");
@@ -250,6 +252,9 @@ public class WorkerUpdateStatus {
         channel.basicQos(workerConfig.getUpdateStatusConcurrentConsumers());
     }
 
+    @Observed(name = "worker.update_status.process_message",
+         contextualName = "worker-update-status-process-message",
+         lowCardinalityKeyValues = {"span.kind", "consumer"})
     private boolean processMessage(Delivery delivery) throws Exception {
         long count = processedCount.incrementAndGet();
         String messageBody = new String(delivery.getBody(), StandardCharsets.UTF_8);
@@ -303,6 +308,9 @@ public class WorkerUpdateStatus {
         }
     }
 
+    @Observed(name = "worker.update_status.update_message_success",
+         contextualName = "worker-update-message-success",
+         lowCardinalityKeyValues = {"span.kind", "internal"})
     private boolean updateMessageWithSuccess(int campaignId, int messageId, String externalMessageId)
             throws SQLException {
         LoggerUtil.info("🔄 Updating message as success - campaignId: " + campaignId + ", messageId: " + messageId);
@@ -395,6 +403,9 @@ public class WorkerUpdateStatus {
         return false;
     }
 
+    @Observed(name = "worker.update_status.update_message_error",
+         contextualName = "worker-update-message-error",
+         lowCardinalityKeyValues = {"span.kind", "internal"})
     private boolean updateMessageWithError(int campaignId, int messageId, JsonNode error) throws SQLException {
         LoggerUtil.info("🔄 Updating message as error - campaignId: " + campaignId + ", messageId: " + messageId);
 

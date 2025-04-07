@@ -56,7 +56,8 @@ public class FacebookService {
     }
 
     @Observed(name = "facebook.send_message", 
-              contextualName = "facebook-send-message")
+         contextualName = "facebook-send-message",
+         lowCardinalityKeyValues = {"span.kind", "client"})
     public CompletableFuture<ObjectNode> sendMessage(String pageId, String payload) {
         // If a token manager is injected, use it.
         if (tokenManager != null) {
@@ -84,7 +85,8 @@ public class FacebookService {
     }
 
     @Observed(name = "facebook.execute_api_call", 
-              contextualName = "facebook-execute-api-call")
+         contextualName = "facebook-execute-api-call",
+         lowCardinalityKeyValues = {"span.kind", "client"})
     private CompletableFuture<ObjectNode> executeFacebookApiCall(String pageId, String accessToken, String payload) {
         String url = "https://graph.facebook.com/v22.0/me/messages?access_token=" + accessToken;
         HttpPost httpPost = new HttpPost(url);
@@ -133,7 +135,8 @@ public class FacebookService {
     }
 
     @Observed(name = "facebook.handle_error", 
-              contextualName = "facebook-handle-error")
+         contextualName = "facebook-handle-error",
+         lowCardinalityKeyValues = {"span.kind", "internal"})
     private void handleFacebookError(String pageId, ObjectNode responseJson, 
                                    CompletableFuture<ObjectNode> future) {
         ObjectNode error = (ObjectNode) responseJson.get("error");

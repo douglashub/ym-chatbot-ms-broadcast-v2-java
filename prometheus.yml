@@ -1,7 +1,15 @@
 global:
   scrape_interval: 15s
+  evaluation_interval: 15s
 
 scrape_configs:
+  # Métricas de span agregadas pelo conector spanmetrics
   - job_name: 'jaeger-spanmetrics'
     static_configs:
       - targets: ['jaeger:8889']
+    honor_labels: true
+  
+  # Telemetria interna do Jaeger
+  - job_name: 'jaeger-telemetry'
+    static_configs:
+      - targets: ['jaeger:8888']

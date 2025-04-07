@@ -50,6 +50,21 @@ services:
       retries: 10
       start_period: 30s
 
+  prometheus:
+    image: prom/prometheus:latest
+    container_name: prometheus
+    ports:
+      - "9090:9090"
+    volumes:
+      - ./prometheus.yml:/etc/prometheus/prometheus.yml
+    healthcheck:
+      test: ["CMD", "wget", "-q", "--spider", "http://localhost:9090/-/healthy"]
+      interval: 10s
+      timeout: 5s
+      retries: 3
+    networks:
+      - app_network
+
   jaeger:
     image: jaegertracing/all-in-one:latest
     container_name: jaeger
@@ -64,9 +79,19 @@ services:
       - "14269:14269"   # Admin port
       - "4317:4317"     # OTLP gRPC
       - "4318:4318"     # OTLP HTTP
+      - "8888:8888"     # Telemetry metrics
+      - "8889:8889"     # Spanmetrics export
     environment:
       - COLLECTOR_OTLP_ENABLED=true
       - COLLECTOR_ZIPKIN_HOST_PORT=:9411
+      - JAEGER_QUERY_UI_CONFIG={"monitor":{"menuEnabled":true}}
+      # Configurações específicas para SPM na versão 1.x
+      - METRICS_STORAGE_TYPE=prometheus
+      - PROMETHEUS_SERVER_URL=http://prometheus:9090
+      - PROMETHEUS_QUERY_NORMALIZE_CALLS=true
+      - PROMETHEUS_QUERY_NORMALIZE_DURATION=true
+      # Aumentar nível de log para debugging
+      - LOG_LEVEL=debug
     volumes:
       - ./config-spm.yaml:/etc/jaeger/config-spm.yaml
     command: ["--config-file=/etc/jaeger/config-spm.yaml"]
@@ -75,19 +100,12 @@ services:
       interval: 10s
       timeout: 5s
       retries: 3
+    depends_on:
+      prometheus:
+        condition: service_healthy
     networks:
       - app_network
-
-  prometheus:
-    image: prom/prometheus:latest
-    container_name: prometheus
-    ports:
-      - "9090:9090"
-    volumes:
-      - ./prometheus.yml:/etc/prometheus/prometheus.yml
-    networks:
-      - app_network
-
+    
   worker_send_message:
     build:
       context: .
@@ -119,6 +137,8 @@ services:
       - WORKER_SEND_MESSAGE_REPLICAS=22
       - UPDATE_STATUS_CONCURRENT_CONSUMERS=19
       - JAVA_OPTS=-XX:+UseContainerSupport -XX:MaxRAMPercentage=75.0 -Xms512m -Xmx1536m -XX:+HeapDumpOnOutOfMemoryError
+      - OTEL_RESOURCE_ATTRIBUTES=service.name=worker-send-message
+      - OTEL_EXPORTER_OTLP_ENDPOINT=http://jaeger:4317
     networks:
       - app_network
     deploy:
