@@ -1,0 +1,56 @@
+# Exporters: onde os spans e métricas serão enviados.
+exporters:
+  # Exportador Prometheus para métricas RED geradas pelo spanmetrics connector.
+  prometheus:
+    endpoint: "0.0.0.0:8889"
+  # Exportador para armazenamento de spans no backend do Jaeger.
+  jaeger_storage_exporter:
+    # Usando configuração padrão para armazenamento (neste exemplo, memória).
+    # Em produção, você pode usar outros backends (Cassandra, Elasticsearch, etc.).
+
+# Connectors: convertem spans em métricas RED (Request, Error, Duration).
+connectors:
+  spanmetrics:
+    # Configuração padrão.
+    # Se necessário, parâmetros adicionais (como buckets customizados) podem ser definidos aqui.
+    # Por padrão, serão geradas métricas como:
+    #   - calls_total
+    #   - duration_milliseconds_bucket
+    #   - duration_milliseconds_sum
+    #   - duration_milliseconds_count
+
+# Service pipelines: definem os fluxos de dados para traces e para as métricas derivadas dos spans.
+service:
+  pipelines:
+    # Pipeline de traces: recebe spans via OTLP, processa em lote e exporta para armazenamento e para o connector spanmetrics.
+    traces:
+      receivers: [otlp]
+      processors: [batch]
+      exporters: [jaeger_storage_exporter, spanmetrics]
+    # Pipeline de métricas: recebe métricas geradas pelo connector spanmetrics e exporta para o Prometheus.
+    metrics/spanmetrics:
+      receivers: [spanmetrics]
+      exporters: [prometheus]
+
+# Extensões: configura os backends de armazenamento que o Jaeger Query usará para buscar traces e métricas.
+extensions:
+  jaeger_storage:
+    backends:
+      default:
+        type: memory
+    metric_backends:
+      default:
+        prometheus:
+          endpoint: "http://prometheus:9090"  # Atualize para o endereço do seu Prometheus, se necessário.
+          # Essas flags normalizam os nomes das métricas, ajudando o Jaeger a encontrar:
+          normalize_calls: true
+          normalize_duration: true
+
+  # Configuração do Jaeger Query para utilizar os backends definidos.
+  jaeger_query:
+    traces: default
+    metrics_storage: default
+
+# Monitor: habilita a aba “Monitor” na UI do Jaeger para visualização dos agregados RED.
+monitor:
+  menuEnabled: true

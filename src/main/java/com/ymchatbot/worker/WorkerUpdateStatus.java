@@ -18,6 +18,8 @@ import com.ymchatbot.config.RabbitMQConfig;
 import com.ymchatbot.config.WorkerConfig;
 import com.ymchatbot.util.LoggerUtil;
 
+import io.micrometer.observation.annotation.Observed;
+
 @Component
 public class WorkerUpdateStatus {
     private final String queueName = "broadcast-v2/update-status";
@@ -58,6 +60,8 @@ public class WorkerUpdateStatus {
         }
     }
 
+    @Observed(name = "worker.update_status.initialize",
+              contextualName = "worker-update-status-initialize")
     public synchronized void initialize() throws Exception {
         if (initialized) {
             LoggerUtil.info("WorkerUpdateStatus already initialized, skipping initialization");
@@ -77,6 +81,8 @@ public class WorkerUpdateStatus {
         }
     }
 
+    @Observed(name = "worker.update_status.start",
+              contextualName = "worker-update-status-start")
     public synchronized void start() throws IOException {
         if (started) {
             LoggerUtil.info("WorkerUpdateStatus already started, skipping start");

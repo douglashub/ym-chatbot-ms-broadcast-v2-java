@@ -45,6 +45,9 @@ import com.ymchatbot.FileRateLimiter;
 import com.ymchatbot.RateLimiter;
 import com.ymchatbot.util.LoggerUtil;
 import com.ymchatbot.util.MessageValidator;
+
+import io.micrometer.observation.annotation.Observed;
+
 import com.ymchatbot.config.DatabaseConfig;
 import com.ymchatbot.config.RabbitMQConfig;
 import com.ymchatbot.config.RateLimitConfig;
@@ -156,6 +159,7 @@ public class WorkerSendMessage {
     }
 
     @Scheduled(fixedDelay = 10000)
+    @Observed(name = "worker.send_message.scheduled_fetch_enqueue", contextualName = "worker-scheduled-fetch-enqueue")
     public void scheduledFetchAndEnqueue() {
         try {
             List<Integer> campaignIds = fetchScheduledCampaigns(workerConfig.getScheduledFetchLimit());
@@ -183,6 +187,7 @@ public class WorkerSendMessage {
         }
     }
 
+    @Observed(name = "worker.send_message.process_message", contextualName = "worker-process-message")
     private void processMessage(Delivery delivery) throws Exception {
         boolean allowSecond = FileRateLimiter.allow("yyyyMMdd_HHmmss", rateLimitConfig.getRateLimitPerSecond());
         boolean allowMinute = FileRateLimiter.allow("yyyyMMdd_HHmm", rateLimitConfig.getRateLimitPerMinute());
@@ -475,7 +480,7 @@ public class WorkerSendMessage {
             throw e;
         }
     }
-
+    @Observed(name = "worker.send_message.get_campaign_metrics", contextualName = "worker-get-campaign-metrics")
     private CampaignMetrics getCampaignMetrics(int campaignId) throws SQLException {
         String query = """
                 SELECT
@@ -637,7 +642,9 @@ public class WorkerSendMessage {
         return messages;
     }
 
-    public void start() throws Exception {
+    // Add @Observed annotation to the existing start() method
+    @Observed(name = "worker.send_message.start", contextualName = "worker-send-message-start")
+    public synchronized void start() throws Exception {
         createDirectoryIfNotExists("storage/logs");
         createDirectoryIfNotExists("storage/rate-limit");
 

@@ -38,18 +38,17 @@ facebook:
     refresh-token: ${FACEBOOK_REFRESH_TOKEN:your_long_lived_token}
   token:
     cacheMinutes: ${FACEBOOK_TOKEN_CACHE_MINUTES:55}    # Token cache time in minutes
-    retryMax: ${FACEBOOK_TOKEN_RETRY_MAX:3}             # Maximum token refresh attempts
-    retryDelay: ${FACEBOOK_TOKEN_RETRY_DELAY:1000}      # Initial delay between token refresh attempts (ms)
+    retryMax: ${FACEBOOK_TOKEN_RETRY_MAX:3}              # Maximum token refresh attempts
+    retryDelay: ${FACEBOOK_TOKEN_RETRY_DELAY:1000}       # Initial delay between token refresh attempts (ms)
   rate:
-    limit: ${FACEBOOK_API_RATE_LIMIT:10}              # API call rate limit
-    interval: ${FACEBOOK_API_RATE_INTERVAL:1}         # Interval in seconds for rate limiting
+    limit: ${FACEBOOK_API_RATE_LIMIT:10}               # API call rate limit
+    interval: ${FACEBOOK_API_RATE_INTERVAL:1}          # Interval in seconds for rate limiting
 
 application:
   rate-limit:
     script:
       seconds: ${SCRIPT_RATE_LIMIT_IN_SECONDS:10000}
       minutes: ${SCRIPT_RATE_LIMIT_IN_MINUTES:600000}
-
   worker:
     send-message:
       replicas: ${WORKER_SEND_MESSAGE_REPLICAS:10}
@@ -61,3 +60,13 @@ application:
 
 server:
   port: 8080
+
+management:
+  endpoints:
+    web:
+      exposure:
+        include: "*"
+  tracing:
+    enabled: true
+    sampling:
+      probability: 1.0

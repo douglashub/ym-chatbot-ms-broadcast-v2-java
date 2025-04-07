@@ -9,6 +9,7 @@ import com.ymchatbot.util.LoggerUtil;
 import io.github.bucket4j.Bandwidth;
 import io.github.bucket4j.Bucket;
 import io.github.bucket4j.Refill;
+import io.micrometer.observation.annotation.Observed;
 import org.apache.http.HttpEntity;
 import org.apache.http.HttpResponse;
 import org.apache.http.client.methods.HttpPost;
@@ -54,6 +55,8 @@ public class FacebookService {
         }
     }
 
+    @Observed(name = "facebook.send_message", 
+              contextualName = "facebook-send-message")
     public CompletableFuture<ObjectNode> sendMessage(String pageId, String payload) {
         // If a token manager is injected, use it.
         if (tokenManager != null) {
@@ -80,6 +83,8 @@ public class FacebookService {
         }
     }
 
+    @Observed(name = "facebook.execute_api_call", 
+              contextualName = "facebook-execute-api-call")
     private CompletableFuture<ObjectNode> executeFacebookApiCall(String pageId, String accessToken, String payload) {
         String url = "https://graph.facebook.com/v22.0/me/messages?access_token=" + accessToken;
         HttpPost httpPost = new HttpPost(url);
@@ -127,6 +132,8 @@ public class FacebookService {
         return future;
     }
 
+    @Observed(name = "facebook.handle_error", 
+              contextualName = "facebook-handle-error")
     private void handleFacebookError(String pageId, ObjectNode responseJson, 
                                    CompletableFuture<ObjectNode> future) {
         ObjectNode error = (ObjectNode) responseJson.get("error");

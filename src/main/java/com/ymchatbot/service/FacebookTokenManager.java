@@ -7,6 +7,7 @@ import com.github.benmanes.caffeine.cache.Caffeine;
 import com.ymchatbot.config.FacebookClientProperties;
 import com.ymchatbot.config.FacebookTokenProperties;
 import com.ymchatbot.util.LoggerUtil;
+import io.micrometer.observation.annotation.Observed;
 import org.apache.http.HttpEntity;
 import org.apache.http.client.methods.HttpPost;
 import org.apache.http.concurrent.FutureCallback;
@@ -52,6 +53,9 @@ public class FacebookTokenManager {
         this.tokenRenewalInProgress = new ConcurrentHashMap<>();
     }
 
+    @Observed(name = "facebook.token.get_valid_token", 
+              contextualName = "get-valid-token-for-page", 
+              lowCardinalityKeyValues = {"operation", "validate_token"})
     public CompletableFuture<String> getValidTokenForPage(String pageId) {
         LoggerUtil.info("Validating token for page: " + pageId);
         return getTokenForPage(pageId)
@@ -66,6 +70,9 @@ public class FacebookTokenManager {
                 });
     }
 
+    @Observed(name = "facebook.token.get_token", 
+              contextualName = "get-token-for-page",
+              lowCardinalityKeyValues = {"operation", "get_token"})
     public CompletableFuture<String> getTokenForPage(String pageId) {
         String cachedToken = tokenCache.getIfPresent(pageId);
         if (cachedToken != null && !cachedToken.isEmpty()) {
@@ -89,6 +96,9 @@ public class FacebookTokenManager {
         );
     }
 
+    @Observed(name = "facebook.token.fetch_from_db", 
+              contextualName = "fetch-token-from-database",
+              lowCardinalityKeyValues = {"operation", "db_fetch"})
     private CompletableFuture<String> fetchTokenFromDatabase(String pageId) {
         return CompletableFuture.supplyAsync(() -> {
             try (Connection conn = dataSource.getConnection();
@@ -111,6 +121,9 @@ public class FacebookTokenManager {
         });
     }
 
+    @Observed(name = "facebook.token.refresh", 
+              contextualName = "refresh-token",
+              lowCardinalityKeyValues = {"operation", "refresh"})
     private CompletableFuture<String> refreshToken(String pageId) {
         LoggerUtil.info("Refreshing token for page: " + pageId);
         CompletableFuture<String> future = new CompletableFuture<>();
